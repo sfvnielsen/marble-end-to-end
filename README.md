@@ -11,7 +11,8 @@ Given that a Python virtual environment has been created (or an equivalent conda
 pip install -r requirements.txt
 ```
 
-NB! This installs pytorch assuming a default Cuda version. Please refer to (pytorch)[https://pytorch.org/get-started/locally/] installation page for details on this.
+Afterwards, install `torch` and `torchaudio` to fit your system specifications (CPU, GPU, Cuda version).
+Please refer to the [pytorch](https://pytorch.org/get-started/locally/) installation page for details on this. 
 
 Once installed you should be able to run the main optimization script
 

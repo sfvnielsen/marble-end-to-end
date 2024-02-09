@@ -14,6 +14,7 @@ from commpy.filters import rrcosfilter
 from lib.filtering import FIRfilter, BesselFilter, BrickWallFilter, AllPassFilter, filter_initialization
 from lib.utility import find_max_variance_sample
 
+# TODO: Implement GPU support
 
 class StandardTransmissionSystem(object):
     """
