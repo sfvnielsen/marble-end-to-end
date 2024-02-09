@@ -5,6 +5,7 @@ import numpy.typing as npt
 import numpy as np
 from scipy.signal import bessel
 
+# FIXME: Simplify these operations
 # FIXME: Switch to torchaudio.functional.convolve - does true convolution
 
 def filter_initialization(init_filter: npt.ArrayLike, init_type: str):

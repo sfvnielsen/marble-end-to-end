@@ -1,5 +1,5 @@
 """
-    Script that runs "end-to-end" learning, calculates SER and plots stuff
+    Script that runs end-to-end learning, calculates SER and plots system response
 """
 
 import os
@@ -29,22 +29,22 @@ FIGPREFIX = 'e2e'
 
 if __name__ == "__main__":
     # Define simulation parameters
-    save_figures = True
+    save_figures = False
     n_symbols_train = int(15e5)
-    n_symbols_val = int(5e5)
+    n_symbols_val = int(5e5)  # number of symbols used for SER calculation
     samples_per_symbol = 16
     baud_rate = int(10e6)
-    train_snr_db = 16.0
+    train_snr_db = 16.0  # SNR at which the (NB! Not EsN0)
     eval_snr_db = 0.0
     mod_order = 4  # PAM
     rrc_pulse_length_in_syms = 16
     rrc_rolloff = 0.5
     learn_tx, tx_filter_length = True, 295
     learn_rx, rx_filter_length = True, 295
-    dac_bwl_relative_cutoff = 0.75
+    dac_bwl_relative_cutoff = 0.75  # low-pass filter cuttoff relative to bandwidth of the RRC pulse
     adc_bwl_relative_cutoff = 0.75
-    use_brickwall = False
-    use_1clr = True
+    use_brickwall = False  # use brickwall filter instead of Bessel in the ADC/DAC (Experimental)
+    use_1clr = True  # learning rate scheduling of the optimizer
 
     figtitles = 'pulseshaping' if learn_tx else 'rxfilt'
     if learn_tx and learn_rx:
@@ -104,8 +104,7 @@ if __name__ == "__main__":
     ser, delay = calc_ser_pam(ahat, a, discard=100)
     print(f"SER: {ser} (delay: {delay})")
 
-
-    # Compare to standard/optimal matched filtering
+    # Compare to standard non-optimized matched filtering
     awgn_mf_system = MatchedFilterAWGNwithBWL(sps=samples_per_symbol, snr_db=eval_snr_db, baud_rate=baud_rate,
                                               constellation=modulation_scheme.constellation,
                                               rrc_length_in_symbols=rrc_pulse_length_in_syms, rrc_rolloff=rrc_rolloff,
@@ -116,7 +115,6 @@ if __name__ == "__main__":
     print(f"SER (Matched filter): {ser_mf} (delay: {delay_mf})")
 
     # Plot learned filters vs. matched
-    # FIXME: Add RC response as target curve for total-response
     filter_amp_min_db = -80.0
     fig, ax = plt.subplots(nrows=2, ncols=3, figsize=(20, 12.5))
     for sys, label in zip([awgn_system, awgn_mf_system],

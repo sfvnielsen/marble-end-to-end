@@ -1,3 +1,7 @@
+"""
+    Test that matched filter and theory matches for the AWGN channel
+"""
+
 import numpy as np
 import komm
 import pandas as pd
