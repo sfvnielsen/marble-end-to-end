@@ -1,5 +1,5 @@
 # End-to-end learning of optic fiber communication systems
-This repository contains a collection of Python implementations for learning optimal transmitter and receiver parameters in an optical communication system. The term end-to-end refers to the fact that jointly in an end-to-end fashion.
+This repository contains a collection of Python implementations for learning optimal transmitter and receiver parameters in an optical communication system. The term end-to-end refers to the fact that parameters from both sides of the channel are jointly optimized.
 
 Currently, the repo uses automatic differentiation via. `pytorch` for ease of experimentation and prototyping.
 
