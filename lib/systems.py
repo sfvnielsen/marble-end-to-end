@@ -710,3 +710,29 @@ class RxFilteringAWGNwithBWL(BasicAWGNwithBWL):
                          rrc_rolloff=rrc_rolloff,
                          use_brickwall=use_brickwall,
                          use_1clr=use_1clr)
+
+
+class JointTxRxAWGNwithBWL(BasicAWGNwithBWL):
+    """
+       Bandwidth limited AWGN channel with learnable Tx and Rx filter.
+    """
+    def __init__(self, sps, snr_db, baud_rate, constellation, batch_size, learning_rate,
+                 rx_filter_length, tx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
+                 filter_init_type='rrc', print_interval=int(5e4), rrc_length_in_symbols=16, rrc_rolloff=0.5,
+                 use_brickwall=False, use_1clr=False) -> None:
+        super().__init__(sps, snr_db=snr_db, baud_rate=baud_rate,
+                         adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
+                         learning_rate=learning_rate,
+                         batch_size=batch_size,
+                         constellation=constellation,
+                         learn_tx=True, learn_rx=True,
+                         tx_filter_length=tx_filter_length,
+                         tx_filter_init_type=filter_init_type,
+                         rx_filter_length=rx_filter_length,
+                         rx_filter_init_type=filter_init_type,
+                         print_interval=print_interval,
+                         rrc_length_in_symbols=rrc_length_in_symbols,
+                         rrc_rolloff=rrc_rolloff,
+                         use_brickwall=use_brickwall,
+                         use_1clr=use_1clr)
