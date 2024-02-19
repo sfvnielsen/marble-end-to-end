@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from scipy.signal import lfilter
 
 from lib.utility import calc_ser_pam, calc_theory_ser_pam
-from lib.systems import BasicAWGNwithBWL, MatchedFilterAWGNwithBWL
+from lib.systems import NonLinearISIChannel
 from lib.plotting import plot_bar, plot_fft_filter_response, plot_fft_ab_response
 
 font = {'family': 'Helvetica',
@@ -25,7 +25,7 @@ mpl.rc('text', **text)
 FIGSIZE = (12.5, 7.5)
 DPI = 150
 FIGURE_DIR = 'figures'
-FIGPREFIX = 'e2e'
+FIGPREFIX = 'e2e_non_lin'
 
 if __name__ == "__main__":
     # Define simulation parameters
@@ -34,13 +34,13 @@ if __name__ == "__main__":
     n_symbols_val = int(5e5)  # number of symbols used for SER calculation
     samples_per_symbol = 16
     baud_rate = int(100e6)
-    train_snr_db = 4.0  # SNR at which the training is done (NB! Not EsN0)
-    eval_snr_db = 0.0
+    train_snr_db = 0.0  # SNR at which the (NB! Not EsN0)
+    eval_snr_db = train_snr_db
     mod_order = 4  # PAM
     rrc_pulse_length_in_syms = 16
     rrc_rolloff = 0.5
     learn_tx, tx_filter_length = True, None
-    learn_rx, rx_filter_length = True, 55
+    learn_rx, rx_filter_length = True, 255
     dac_bwl_relative_cutoff = 0.75  # low-pass filter cuttoff relative to bandwidth of the RRC pulse
     adc_bwl_relative_cutoff = 0.75
     use_brickwall = False  # use brickwall filter instead of Bessel in the ADC/DAC (Experimental)
@@ -64,26 +64,30 @@ if __name__ == "__main__":
     random_obj = np.random.default_rng(seed=seed)
 
     # Optimization parameters
-    learning_rate = 1e-4
-    batch_size = 100
+    learning_rate = 1e-3
+    batch_size = 400
 
     # Initialize learnable transmission system
-    awgn_system = BasicAWGNwithBWL(sps=samples_per_symbol, snr_db=train_snr_db, baud_rate=baud_rate,
-                                   learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
-                                   learn_tx=learn_tx, learn_rx=learn_rx, rrc_length_in_symbols=rrc_pulse_length_in_syms, rrc_rolloff=rrc_rolloff,
-                                   tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr, use_brickwall=use_brickwall,
-                                   adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
-                                   tx_filter_init_type='rrc', rx_filter_init_type='dirac')
+    non_linear_coefs = (0.9, 0.2, -0.1)
+    non_lin_system = NonLinearISIChannel(non_linear_coefficients=non_linear_coefs,
+                                         isi_filter1=np.array([0.2, 0.9, 0.01, 0.02, 0.03]),
+                                         isi_filter2=np.array([0.2, 0.001, 0.9,-0.01]),
+                                         sps=samples_per_symbol, snr_db=train_snr_db, baud_rate=baud_rate,
+                                         learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
+                                         learn_tx=learn_tx, learn_rx=learn_rx, rrc_length_in_symbols=rrc_pulse_length_in_syms, rrc_rolloff=rrc_rolloff,
+                                         tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr, use_brickwall=use_brickwall,
+                                         adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
+                                         tx_filter_init_type='rrc', rx_filter_init_type='rrc')
 
-    awgn_system.initialize_optimizer()
+    non_lin_system.initialize_optimizer()
 
     # Get the LPF filters
     adc_filter_b, adc_filter_a = None, None
     dac_filter_b, dac_filter_a = None, None
     if adc_bwl_relative_cutoff:
-        adc_filter_b, adc_filter_a = awgn_system.adc.get_filters()
+        adc_filter_b, adc_filter_a = non_lin_system.adc.get_filters()
     if dac_bwl_relative_cutoff:
-        dac_filter_b, dac_filter_a = awgn_system.dac.get_filters()
+        dac_filter_b, dac_filter_a = non_lin_system.dac.get_filters()
 
     # Generate training data
     n_bits = int(np.log2(len(modulation_scheme.constellation)) * n_symbols_train)
@@ -92,33 +96,27 @@ if __name__ == "__main__":
 
     # Fit
     if learn_tx or learn_rx:
-        awgn_system.optimize(a)
-
+        non_lin_system.optimize(a)
 
     # Generate validation data and caclulate SER on that with learned filters
     n_bits = int(np.log2(len(modulation_scheme.constellation)) * n_symbols_val)
     bit_sequence = random_obj.integers(0, 2, size=n_bits)
     a = modulation_scheme.modulate(bit_sequence)
-    awgn_system.set_snr(eval_snr_db)
-    ahat = awgn_system.evaluate(a)
+    non_lin_system.set_snr(eval_snr_db)
+    ahat = non_lin_system.evaluate(a)
     ser, delay = calc_ser_pam(ahat, a, discard=100)
     print(f"SER: {ser} (delay: {delay})")
 
-    # Compare to standard non-optimized matched filtering
-    awgn_mf_system = MatchedFilterAWGNwithBWL(sps=samples_per_symbol, snr_db=eval_snr_db, baud_rate=baud_rate,
-                                              constellation=modulation_scheme.constellation,
-                                              rrc_length_in_symbols=rrc_pulse_length_in_syms, rrc_rolloff=rrc_rolloff,
-                                              adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
-                                              dac_bwl_relative_cutoff=dac_bwl_relative_cutoff)
-    ahat_mf = awgn_mf_system.evaluate(a)
-    ser_mf, delay_mf = calc_ser_pam(ahat_mf, a, discard=100)
-    print(f"SER (Matched filter): {ser_mf} (delay: {delay_mf})")
+
+    # Plot learned filters vs. matched
+    # FIXME: How to plot this with non-linearity in channel?
+
 
     # Plot learned filters vs. matched
     filter_amp_min_db = -80.0
     fig, ax = plt.subplots(nrows=2, ncols=3, figsize=(20, 12.5))
-    for sys, label in zip([awgn_system, awgn_mf_system],
-                   ['E2E', 'Matched']):
+    for sys, label in zip([non_lin_system],
+                          ['E2E']):
         txfilt = sys.get_pulse_shaping_filter()
         rxfilt = sys.get_rx_filter()
 
@@ -129,6 +127,7 @@ if __name__ == "__main__":
         if adc_bwl_relative_cutoff:
             total_response = lfilter(adc_filter_b, adc_filter_a, total_response)
         total_response = np.convolve(total_response, rxfilt)
+        total_response = np.convolve(total_response, non_lin_system.get_total_isi())
 
         # First row - time domain
         ax[0, 0].plot(txfilt, '--', label=label)
@@ -152,7 +151,7 @@ if __name__ == "__main__":
     ax[1, 0].set_ylabel('Fq domain')
     ax[0, 0].set_title('Pulse Shaping (learned)' if learn_tx else 'Pulse Shaping')
     ax[0, 1].set_title('Rx filter (learned)' if learn_rx else 'Rx filter')
-    ax[0, 2].set_title('Total response (including LPF)')
+    ax[0, 2].set_title('Total response (LPFs + ISI)')
     ax[1, 0].legend(loc='lower center')
     ax[1, 1].legend(loc='lower center')
     for i in range(3):
@@ -160,25 +159,38 @@ if __name__ == "__main__":
         ax[1, i].set_ylim(filter_amp_min_db, ymax)
 
     plt.tight_layout()
-    if save_figures:
-        fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_system_response.eps"), format='eps')
-        fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_system_response.png"), dpi=DPI)
 
 
     # Plot distribution of symbols
     fig, ax = plt.subplots(figsize=FIGSIZE)
     ax.hist(ahat, bins=100, density=True)
 
+    if save_figures:
+        fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_symbol_dist.eps"), format='eps')
+        fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_symbol_dist.png"), dpi=DPI)
+
     # Calc theory SER
-    esn0_db = awgn_system.get_esn0_db()
+    esn0_db = non_lin_system.get_esn0_db()
     ser_theory = calc_theory_ser_pam(mod_order, esn0_db)
-    ser_mf_conf = 1.96 * np.sqrt((ser_mf * (1 - ser_mf) / (n_symbols_val)))
+    ser_mf_conf = 1.96 * np.sqrt((ser * (1 - ser) / (n_symbols_val)))
     print(f"Theoretical SER: {ser_theory} (EsN0: {esn0_db:.3f} [dB])")
     print(f"95pct confidence (+-) {ser_mf_conf}")
 
     fig, ax = plt.subplots(figsize=FIGSIZE)
-    plot_bar(['E2E', 'Matched filter', 'Theory'],
-             [np.log10(x) for x in [ser, ser_mf, ser_theory]],
+    plot_bar(['E2E', 'Theory'],
+             [np.log10(x) for x in [ser, ser_theory]],
              ax)
+    
+    fig, ax = plt.subplots(figsize=FIGSIZE)
+    x = np.linspace(-1.5, 1.5, 1000)
+    ax.plot(x, non_lin_system.non_linear_function(x))
+    ax.set_title('Non-linear function')
+    ax.set_xlabel('$x$')
+    ax.set_ylabel('$f(x)$')
+
+    if save_figures:
+        fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_non_linear_fun.eps"), format='eps')
+        fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_non_linear_fun.png"), dpi=DPI)
+
 
     plt.show()

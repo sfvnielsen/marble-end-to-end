@@ -60,7 +60,7 @@ class FIRfilter(torch.nn.Module):
         assert batch_size % self.stride == 0
         # Allocate output
         y = torch.empty((x.shape[0] // self.stride,), dtype=x.dtype)
-        n_batches = len(x) // batch_size
+        n_batches = int(np.ceil(len(x) / batch_size))
         prepad = torch.zeros((self.padding[0]))
         postpad = x[batch_size:(batch_size+self.padding[1])]
         outputs_pr_batch = batch_size // self.stride
@@ -150,7 +150,7 @@ class BrickWallFilter(torch.nn.Module):
         assert batch_size > self.padding[0]
         # Allocate output
         y = torch.empty((x.shape[0],), dtype=x.dtype)
-        n_batches = len(x) // batch_size
+        n_batches = int(np.ceil(len(x) / batch_size))
         prepad = torch.zeros((self.padding[0]))
         postpad = x[batch_size:(batch_size+self.padding[1])]
         outputs_pr_batch = batch_size

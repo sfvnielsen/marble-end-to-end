@@ -1,18 +1,32 @@
 import numpy as np
 from scipy.stats import norm
+from scipy.signal import correlate
 
 
-def find_delay(ahat, a, delay_order, sublength=1000):
-    """ Find delay that maximizes correlation between real-parts
+def symbol_sync(rx, tx, sps):
+    """ Synchronizes tx symbols to the received signal, assumed to be oversample at sps
+        Assumes that rx has been through a sampling recovery mechanism first
+
+        Heavily inspired by the DSP library in https://github.com/edsonportosilva/OptiCommPy
     """
-    assert (len(ahat) > (sublength + delay_order) and len(a) > (sublength + delay_order))
-    corr = np.zeros((delay_order,))
-    for i in range(delay_order):
-        corr[i] = np.dot(np.real(ahat[delay_order:(sublength + delay_order)]), np.real(np.roll(a, i)[delay_order:(sublength + delay_order)])) / sublength
-    return np.argmax(np.absolute(corr))
+    rx_syms = rx[0::sps]
+    delay = find_delay(tx, rx_syms)
+    return np.roll(tx, -int(delay))
+
+
+def find_delay(x, y):
+    """ Find delay that maximizes correlation between real-parts
+
+        Heavily inspired by the DSP library in https://github.com/edsonportosilva/OptiCommPy
+    """
+    return np.argmax(correlate(np.real(x), np.real(y))) - x.shape[0] + 1
 
 
 def find_max_variance_sample(y, sps):
+    """ Find sampling recovery compensation shift using the maximum variance method
+
+        Heavily inspired by the DSP library in https://github.com/edsonportosilva/OptiCommPy
+    """
     nsyms = len(y) // sps  # truncate to an integer num symbols
     yr = np.reshape(y[0:nsyms*sps], (-1, sps))
     var = np.var(yr, axis=0)
@@ -20,16 +34,13 @@ def find_max_variance_sample(y, sps):
     return max_variance_sample
 
 
-def calc_ser_pam(y_eq, a, delay_order=30, sublength=1000, discard=10):
+def calc_ser_pam(y_eq, a, discard=10):
     assert len(y_eq) == len(a)
-    opt_delay = 0
-    if delay_order != 0:
-        opt_delay = find_delay(y_eq, a, delay_order=delay_order, sublength=sublength)
+    opt_delay = find_delay(y_eq, a)
     const = np.unique(a)
     ahat = decision_logic(y_eq, const, const)
     errors = ahat[discard:-discard] != np.roll(a, opt_delay)[discard:-discard]
-    if np.sum(errors) < 10:
-        print(f"WARNING!: Total number of errors was {np.sum(errors)} in SER calculation.")
+    print(f"Total number of erros {np.sum(errors)} (optimal delay: {opt_delay})")
     return np.mean(errors), opt_delay
 
 
@@ -64,3 +75,11 @@ def calculate_confusion_matrix(ahat, a):
         conf_mat[true_label, predicted_label] += 1
 
     return conf_mat, unique_symbols, unique_symbols2
+
+
+def decision_logic_torch(xhat, syms):
+    import torch
+    # DEBUG function for torch
+    absdiff = torch.abs(xhat[:, None] - syms[None, :])
+    min_indices = torch.argmin(absdiff, axis=1)
+    return syms[min_indices]

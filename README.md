@@ -32,6 +32,16 @@ This system is implemented in the three classes `PulseShapingAWGNwithBWL` (where
 
 Please refer to the script `main_e2e.py` for an example of how the system is optimized.
 
+## General non-linear channel with bandwidth limitation and noise
+
+In addition to the AWGN channel, a more general channel with a non-linear response has been implemented in the `systems.py` library. The processing blocks are similarly implemented in `pytorch` and follow the same flow as the AWGN system abovem with the exception of the channel. A blockdiagram of the general non-linear channel can be seen below.
+
+![Blockdigram of the general non-linear channel](imgs/general-non-linear-channel.png)
+
+This system is implemented in the three classes `PulseShapingNonLinearISIChannel` (where the Rx filter is fixed), `RxFilteringNonLinearISIChannel` (where the Tx filter is fixed) and `JointTxRxNonLinearISIChannel` (where Rx and Tx filter are jointly optimized).
+
+Please refer to the script `main_e2e_nonlin.py` for an example of how the system is optimized.
+
 ## Acknowledgements
 The work carried out in this repository is part of a research project [MAchine leaRning enaBLEd fiber optic communication](https://veluxfoundations.dk/en/villum-synergy-2021) (MARBLE) funded by the Villum foundation.
 
