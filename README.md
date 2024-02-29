@@ -20,6 +20,13 @@ Once installed you should be able to run the main optimization script
 python main_e2e.py
 ```
 
+### Standalone example
+
+A self-contained script that optimizes the Tx filter in an AWGN channel (*without* bandwidth limitation) has been implemented in `main_standalone_awgn.py`.
+This is to showcase how the optimization loop is implemented in an end-to-end system. 
+The equivalent system, implemented with a class-based structure can be seen in `lib/systems.py:BasicAWGN`.
+
+
 ## Additive white gaussian noise channel with bandwidth limitation
 
 In the `system` library (`lib/systems.py`) an AWGN channel with bandwidth limitation has been implemented in `pytorch`. The bandwidth limitation arises from the digital-to-analog (DAC) and analog-to-digital (ADC) converters, both of which are modeled using a 2nd order Bessel filter, with a 3dB cutoff frequency relative to the specified baud rate. The symbols are propagated through the system and the mean squared error between the transmitted symbols and the symbols after the Rx filter is measured. This error is used in a stochastic gradient descent scheme to optimize the filters in the system.
