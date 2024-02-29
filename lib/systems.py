@@ -970,8 +970,7 @@ class PulseShapingNonLinearISIChannel(NonLinearISIChannel):
                  tx_filter_length, rx_filter_length,
                  non_linear_coefficients=(0.95, 0.04, 0.01),
                  isi_filter1=np.array([0.2, -0.1, 0.9, 0.3]), isi_filter2=np.array([0.2, 0.9, 0.3]),
-                 tx_filter_init_type='rrc',
-                 rx_filter_init_type='rrc', print_interval=int(50000), use_brickwall=False,
+                 filter_init_type='rrc', print_interval=int(50000), use_brickwall=False,
                  use_1clr=False, rrc_rolloff=0.5) -> None:
         super().__init__(sps=sps, snr_db=snr_db, baud_rate=baud_rate,
                          learning_rate=learning_rate, batch_size=batch_size,
@@ -982,7 +981,7 @@ class PulseShapingNonLinearISIChannel(NonLinearISIChannel):
                          non_linear_coefficients=non_linear_coefficients,
                          isi_filter1=isi_filter1, isi_filter2=isi_filter2,
                          tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length,
-                         tx_filter_init_type=tx_filter_init_type, rx_filter_init_type=rx_filter_init_type,
+                         tx_filter_init_type=filter_init_type, rx_filter_init_type='rrc',
                          print_interval=print_interval, use_brickwall=use_brickwall, use_1clr=use_1clr,
                          rrc_rolloff=rrc_rolloff)
 
@@ -995,7 +994,7 @@ class RxFilteringNonLinearISIChannel(NonLinearISIChannel):
                  constellation, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
                  rx_filter_length, tx_filter_length, non_linear_coefficients=(0.95, 0.04, 0.01),
                  isi_filter1=np.array([0.2, -0.1, 0.9, 0.3]), isi_filter2=np.array([0.2, 0.9, 0.3]),
-                 tx_filter_init_type='rrc', rx_filter_init_type='rrc', print_interval=int(50000),
+                 filter_init_type='rrc', print_interval=int(50000),
                  use_brickwall=False, use_1clr=False, rrc_rolloff=0.5) -> None:
         super().__init__(sps=sps, snr_db=snr_db, baud_rate=baud_rate,
                          learning_rate=learning_rate, batch_size=batch_size,
@@ -1006,7 +1005,7 @@ class RxFilteringNonLinearISIChannel(NonLinearISIChannel):
                          non_linear_coefficients=non_linear_coefficients,
                          isi_filter1=isi_filter1, isi_filter2=isi_filter2,
                          tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length,
-                         tx_filter_init_type=tx_filter_init_type, rx_filter_init_type=rx_filter_init_type,
+                         tx_filter_init_type='rrc', rx_filter_init_type=filter_init_type,
                          print_interval=print_interval, use_brickwall=use_brickwall, use_1clr=use_1clr,
                          rrc_rolloff=rrc_rolloff)
 
