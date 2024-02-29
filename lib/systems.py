@@ -131,7 +131,7 @@ class MatchedFilterAWGNwithBWL(StandardTransmissionSystem):
 
         # Construct DAC and ADC low-pass filter - set to None if no cutof is specified
         # Define bandwidth limitation filters - low pass filter with cutoff relative to bw of RRC
-        rrc_bw = 0.5 * (1 + rrc_rolloff) / (1 / baud_rate)
+        rrc_bw = 0.5 / (1 / baud_rate)
 
         self.adc_bessel_b, self.adc_bessel_a = None, None
         if adc_bwl_relative_cutoff:
@@ -537,8 +537,8 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
             rx_filter_init[0:len(g)] = np.copy(g[::-1])
         self.rx_filter = FIRfilter(filter_weights=rx_filter_init, trainable=learn_rx, stride=self.sps)
 
-        # Define bandwidth limitation filters - low pass filter with cutoff relative to bw of RRC
-        rrc_bw = 0.5 * (1 + rrc_rolloff) / (1 / baud_rate)
+        # Define bandwidth limitation filters - low pass filter with cutoff relative to bandwidth of baseband
+        rrc_bw = 0.5 / (1 / baud_rate)
 
         # Digital-to-analog (DAC) converter
         self.dac = AllPassFilter()
@@ -790,7 +790,7 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
         self.rx_filter = FIRfilter(filter_weights=rx_filter_init, trainable=learn_rx, stride=self.sps)
 
         # Define bandwidth limitation filters - low pass filter with cutoff relative to bw of RRC
-        rrc_bw = 0.5 * (1 + rrc_rolloff) / (1 / baud_rate)
+        rrc_bw = 0.5 / (1 / baud_rate)
 
         # Digital-to-analog (DAC) converter
         self.dac = AllPassFilter()

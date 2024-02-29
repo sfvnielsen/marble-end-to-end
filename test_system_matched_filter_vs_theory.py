@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from commpy.filters import rrcosfilter
 
-from lib.systems import MatchedFilterAWGN
+from lib.systems import BasicAWGN
 from lib.utility import calc_theory_ser_pam, calc_ser_pam
 
 if __name__ == "__main__":
@@ -18,16 +18,16 @@ if __name__ == "__main__":
     n_symbols = int(1e6)
 
     normalize_after_tx = True
-    snr_db = np.arange(-6.0, 8.0, 2.0)
+    snr_db = np.arange(0, 10.0, 1.0)
 
     sym_rate = int(10e6)  # baud - number of transmitted symbols pr second
     sym_length = 1 / sym_rate
-    samples_pr_symbol = 16
+    samples_pr_symbol = 4
     Ts = sym_length / samples_pr_symbol  # effective sampling interval
     reps = 3
 
     # Pulse shaping - used root raised cosine filter
-    pulse_length_in_symbols = 64
+    pulse_length_in_symbols = 32
     rolloff = 0.1
 
     # Create modulation scheme
@@ -43,8 +43,10 @@ if __name__ == "__main__":
     results = []
 
     # Create system object
-    mf_system = MatchedFilterAWGN(sps=samples_pr_symbol, baud_rate=sym_rate, constellation=modulation_scheme.constellation,
-                                  normalize_after_tx=True, rrc_length_in_symbols=pulse_length_in_symbols, rrc_rolloff=rolloff, snr_db=-90)
+    mf_system = BasicAWGN(sps=samples_pr_symbol, baud_rate=sym_rate, constellation=modulation_scheme.constellation,
+                          normalize_after_tx=True, rrc_length_in_symbols=pulse_length_in_symbols, rrc_rolloff=rolloff, snr_db=-90,
+                          learn_rx=False, learn_tx=False, tx_filter_init_type='rrc', rx_filter_init_type='rrc',
+                          learning_rate=0.0, batch_size=-1)
 
     esn0_db_list = []
 

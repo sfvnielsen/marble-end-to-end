@@ -32,15 +32,15 @@ if __name__ == "__main__":
     save_figures = False
     n_symbols_train = int(15e5)
     n_symbols_val = int(5e5)  # number of symbols used for SER calculation
-    samples_per_symbol = 16
+    samples_per_symbol = 4
     baud_rate = int(100e6)
-    train_snr_db = 0.0  # SNR at which the (NB! Not EsN0)
+    train_snr_db = 4.0  # SNR at which the (NB! Not EsN0)
     eval_snr_db = train_snr_db
     mod_order = 4  # PAM
     rrc_pulse_length_in_syms = 16
     rrc_rolloff = 0.5
     learn_tx, tx_filter_length = True, None
-    learn_rx, rx_filter_length = True, 255
+    learn_rx, rx_filter_length = True, 55
     dac_bwl_relative_cutoff = 0.75  # low-pass filter cuttoff relative to bandwidth of the RRC pulse
     adc_bwl_relative_cutoff = 0.75
     use_brickwall = False  # use brickwall filter instead of Bessel in the ADC/DAC (Experimental)
@@ -64,8 +64,8 @@ if __name__ == "__main__":
     random_obj = np.random.default_rng(seed=seed)
 
     # Optimization parameters
-    learning_rate = 1e-3
-    batch_size = 400
+    learning_rate = 1e-4
+    batch_size = 1000
 
     # Initialize learnable transmission system
     non_linear_coefs = (0.9, 0.2, -0.1)
