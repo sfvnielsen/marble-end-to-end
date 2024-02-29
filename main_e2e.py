@@ -37,10 +37,10 @@ if __name__ == "__main__":
     train_snr_db = 12.0  # SNR at which the training is done (NB! Not EsN0)
     eval_snr_db = 4.0
     mod_order = 4  # PAM
-    rrc_pulse_length_in_syms = 32
+    rrc_pulse_length_in_syms = 16
     rrc_rolloff = 0.5
-    learn_tx, tx_filter_length = True, None
-    learn_rx, rx_filter_length = True, None
+    learn_tx, tx_filter_length = True, samples_per_symbol * rrc_pulse_length_in_syms
+    learn_rx, rx_filter_length = True, samples_per_symbol * rrc_pulse_length_in_syms
     dac_bwl_relative_cutoff = 0.75  # low-pass filter cuttoff relative to bandwidth of the RRC pulse
     adc_bwl_relative_cutoff = 0.75
     use_brickwall = False  # use brickwall filter instead of Bessel in the ADC/DAC (Experimental)
@@ -70,7 +70,7 @@ if __name__ == "__main__":
     # Initialize learnable transmission system
     awgn_system = BasicAWGNwithBWL(sps=samples_per_symbol, snr_db=train_snr_db, baud_rate=baud_rate,
                                    learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
-                                   learn_tx=learn_tx, learn_rx=learn_rx, rrc_length_in_symbols=rrc_pulse_length_in_syms, rrc_rolloff=rrc_rolloff,
+                                   learn_tx=learn_tx, learn_rx=learn_rx, rrc_rolloff=rrc_rolloff,
                                    tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr, use_brickwall=use_brickwall,
                                    adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                    tx_filter_init_type='rrc', rx_filter_init_type='rrc')

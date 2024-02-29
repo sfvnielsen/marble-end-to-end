@@ -323,8 +323,8 @@ class BasicAWGN(LearnableTransmissionSystem):
         Basic additive white Gaussian noise system with pulse-shaping by RRC
     """
     def __init__(self, sps, snr_db, baud_rate, learning_rate, batch_size, constellation, learn_tx: bool, learn_rx: bool, print_interval=int(5e4),
-                 rrc_length_in_symbols=16, rrc_rolloff=0.5, normalize_after_tx=True, tx_filter_length=None, rx_filter_length=None,
-                 tx_filter_init_type='dirac', rx_filter_init_type='dirac', use_1clr=False) -> None:
+                 normalize_after_tx=True, tx_filter_length=45, rx_filter_length=45,
+                 tx_filter_init_type='dirac', rx_filter_init_type='dirac', rrc_rolloff=0.5, use_1clr=False) -> None:
         super().__init__(sps=sps,
                          snr_db=snr_db,
                          baud_rate=baud_rate,
@@ -334,27 +334,32 @@ class BasicAWGN(LearnableTransmissionSystem):
                          print_interval=print_interval,
                          use_1clr=use_1clr)
 
-        # Construct RRC filter
-        __, g = rrcosfilter(rrc_length_in_symbols * self.sps, rrc_rolloff, self.sym_length, 1 / self.Ts)
-        g = g[1::]  # delete first element to make filter odd length
-        assert len(g) % 2 == 1  # we assume that pulse is always odd
-        g = g / np.linalg.norm(g)
-        self.rrc_filter = g
-
         # Define pulse shaper
-        tx_filter_init = np.zeros_like(g) if tx_filter_length is None else np.zeros((tx_filter_length,), dtype=g.dtype)
+        tx_filter_init = np.zeros((tx_filter_length,))
         if learn_tx and tx_filter_init_type != 'rrc':
             tx_filter_init = filter_initialization(tx_filter_init, tx_filter_init_type)
         else:
-            tx_filter_init[0:len(g)] = np.copy(g)
+             # Construct RRC filter
+            __, g = rrcosfilter(tx_filter_length, rrc_rolloff, self.sym_length, 1 / self.Ts)
+            g = g[1::]  # delete first element to make filter odd length
+            assert len(g) % 2 == 1  # we assume that pulse is always odd
+            g = g / np.linalg.norm(g)
+            tx_filter_init = g
+
         self.pulse_shaper = FIRfilter(filter_weights=tx_filter_init, trainable=learn_tx)
 
         # Define rx filter - downsample to 1 sps as part of convolution (stride)
-        rx_filter_init = np.zeros_like(g) if rx_filter_length is None else np.zeros((rx_filter_length,), dtype=g.dtype)
+        rx_filter_init = np.zeros((rx_filter_length,))
         if learn_rx and rx_filter_init_type != 'rrc':
             rx_filter_init = filter_initialization(rx_filter_init, rx_filter_init_type)
         else:
-            rx_filter_init[0:len(g)] = np.copy(g[::-1])
+             # Construct RRC filter
+            __, g = rrcosfilter(rx_filter_length, rrc_rolloff, self.sym_length, 1 / self.Ts)
+            g = g[1::]  # delete first element to make filter odd length
+            assert len(g) % 2 == 1  # we assume that pulse is always odd
+            g = g / np.linalg.norm(g)
+            rx_filter_init = g
+
         self.rx_filter = FIRfilter(filter_weights=rx_filter_init, trainable=learn_rx, stride=self.sps)
 
         # Set the post-tx-normalization-property of the class
@@ -449,28 +454,25 @@ class BasicAWGN(LearnableTransmissionSystem):
     def get_rx_filter(self):
         return self.rx_filter.get_filter()
 
-    def get_rrc(self):
-        return np.copy(self.rrc_filter)
-
 
 class PulseShapingAWGN(BasicAWGN):
     """
         Special case of the BasicAWGN model learning the Tx filter (Rx filter set to RRC)
     """
     def __init__(self, sps, snr_db, baud_rate, constellation, batch_size, learning_rate, tx_filter_length,
-                 print_interval=int(50000), rrc_length_in_symbols=16, rrc_rolloff=0.5,
+                 rx_filter_length, print_interval=int(50000), rrc_rolloff=0.5,
                  normalize_after_tx=True, filter_init_type='dirac', use_1clr=False) -> None:
         super().__init__(sps, snr_db=snr_db, baud_rate=baud_rate,
                          learning_rate=learning_rate, batch_size=batch_size,
                          constellation=constellation,
                          learn_tx=True, learn_rx=False,
                          tx_filter_length=tx_filter_length,
-                         rx_filter_length=None,  # filter length controlled by RRC
+                         rx_filter_length=rx_filter_length,
                          print_interval=print_interval,
-                         rrc_length_in_symbols=rrc_length_in_symbols,
                          rrc_rolloff=rrc_rolloff,
                          normalize_after_tx=normalize_after_tx,
                          tx_filter_init_type=filter_init_type,
+                         rx_filter_init_type='rrc',
                          use_1clr=use_1clr)
 
 
@@ -479,19 +481,19 @@ class RxFilteringAWGN(BasicAWGN):
         Special case of the BasicAWGN model learning the Rx filter (Tx filter set to RRC)
     """
     def __init__(self, sps, snr_db, baud_rate, constellation, batch_size, learning_rate, rx_filter_length,
-                 print_interval=int(50000), rrc_length_in_symbols=16, rrc_rolloff=0.5,
+                 tx_filter_length, print_interval=int(50000), rrc_rolloff=0.5,
                  normalize_after_tx=True, filter_init_type='dirac', use_1clr=False) -> None:
         super().__init__(sps, snr_db=snr_db, baud_rate=baud_rate,
                          learning_rate=learning_rate, batch_size=batch_size,
                          constellation=constellation,
                          learn_tx=False, learn_rx=True,
-                         tx_filter_length=None,  # filter length controlled by RRC
+                         tx_filter_length=tx_filter_length,  # filter length controlled by RRC
                          rx_filter_length=rx_filter_length,
                          print_interval=print_interval,
-                         rrc_length_in_symbols=rrc_length_in_symbols,
                          rrc_rolloff=rrc_rolloff,
                          normalize_after_tx=normalize_after_tx,
                          rx_filter_init_type=filter_init_type,
+                         tx_filter_init_type='rrc',
                          use_1clr=use_1clr)
 
 
@@ -500,11 +502,12 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         Basic additive white Gaussian noise system with pulse-shaping by RRC and bandwidth limitation
         Bandwidth limitation parameter is defined relative to the bandwidth of the RRC pulse.
     """
-    def __init__(self, sps, snr_db, baud_rate, learning_rate, batch_size, constellation, adc_bwl_relative_cutoff,
-                 dac_bwl_relative_cutoff, learn_tx: bool, learn_rx: bool, tx_filter_length=None, rx_filter_length=None,
+    def __init__(self, sps, snr_db, baud_rate, learning_rate, batch_size, constellation,
+                 tx_filter_length: int, rx_filter_length: int, adc_bwl_relative_cutoff,
+                 dac_bwl_relative_cutoff, learn_tx: bool, learn_rx: bool,
                  tx_filter_init_type='dirac', rx_filter_init_type='dirac',
                  print_interval=int(5e4), use_brickwall=False, use_1clr=False,
-                 rrc_length_in_symbols=16, rrc_rolloff=0.5) -> None:
+                 rrc_rolloff=0.5) -> None:
         super().__init__(sps=sps,
                          snr_db=snr_db,
                          baud_rate=baud_rate,
@@ -514,27 +517,32 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
                          print_interval=print_interval,
                          use_1clr=use_1clr)
 
-        # Construct RRC filter
-        __, g = rrcosfilter(rrc_length_in_symbols * self.sps, rrc_rolloff, self.sym_length, 1 / self.Ts)
-        g = g[1::]  # delete first element to make filter odd length
-        assert len(g) % 2 == 1  # we assume that pulse is always odd
-        g = g / np.linalg.norm(g)
-        self.rrc_filter = g
-
         # Define pulse shaper
-        tx_filter_init = np.zeros_like(g) if tx_filter_length is None else np.zeros((tx_filter_length,), dtype=g.dtype)
+        tx_filter_init = np.zeros((tx_filter_length,))
         if learn_tx and tx_filter_init_type != 'rrc':
             tx_filter_init = filter_initialization(tx_filter_init, tx_filter_init_type)
         else:
-            tx_filter_init[0:len(g)] = np.copy(g)
+             # Construct RRC filter
+            __, g = rrcosfilter(tx_filter_length, rrc_rolloff, self.sym_length, 1 / self.Ts)
+            g = g[1::]  # delete first element to make filter odd length
+            assert len(g) % 2 == 1  # we assume that pulse is always odd
+            g = g / np.linalg.norm(g)
+            tx_filter_init = g
+
         self.pulse_shaper = FIRfilter(filter_weights=tx_filter_init, trainable=learn_tx)
 
         # Define rx filter - downsample to 1 sps as part of convolution (stride)
-        rx_filter_init = np.zeros_like(g) if rx_filter_length is None else np.zeros((rx_filter_length,), dtype=g.dtype)
+        rx_filter_init = np.zeros((rx_filter_length,))
         if learn_rx and rx_filter_init_type != 'rrc':
             rx_filter_init = filter_initialization(rx_filter_init, rx_filter_init_type)
         else:
-            rx_filter_init[0:len(g)] = np.copy(g[::-1])
+             # Construct RRC filter
+            __, g = rrcosfilter(rx_filter_length, rrc_rolloff, self.sym_length, 1 / self.Ts)
+            g = g[1::]  # delete first element to make filter odd length
+            assert len(g) % 2 == 1  # we assume that pulse is always odd
+            g = g / np.linalg.norm(g)
+            rx_filter_init = g
+
         self.rx_filter = FIRfilter(filter_weights=rx_filter_init, trainable=learn_rx, stride=self.sps)
 
         # Define bandwidth limitation filters - low pass filter with cutoff relative to bandwidth of baseband
@@ -659,17 +667,14 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
     def get_rx_filter(self):
         return self.rx_filter.get_filter()
 
-    def get_rrc(self):
-        return np.copy(self.rrc_filter)
-
 
 class PulseShapingAWGNwithBWL(BasicAWGNwithBWL):
     """
         PulseShaper in bandwidth limited AWGN channel
     """
     def __init__(self, sps, snr_db, baud_rate, constellation, batch_size, learning_rate,
-                 tx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
-                 filter_init_type='dirac', print_interval=int(5e4), rrc_length_in_symbols=16, rrc_rolloff=0.5,
+                 tx_filter_length, rx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
+                 filter_init_type='dirac', print_interval=int(5e4), rrc_rolloff=0.5,
                  use_brickwall=False, use_1clr=False) -> None:
         super().__init__(sps, snr_db=snr_db, baud_rate=baud_rate,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
@@ -678,11 +683,10 @@ class PulseShapingAWGNwithBWL(BasicAWGNwithBWL):
                          batch_size=batch_size,
                          constellation=constellation,
                          learn_tx=True, learn_rx=False,
-                         tx_filter_length=tx_filter_length, rx_filter_length=None,
+                         tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length,
                          tx_filter_init_type=filter_init_type,
                          rx_filter_init_type='rrc',
                          print_interval=print_interval,
-                         rrc_length_in_symbols=rrc_length_in_symbols,
                          rrc_rolloff=rrc_rolloff,
                          use_brickwall=use_brickwall,
                          use_1clr=use_1clr)
@@ -693,8 +697,8 @@ class RxFilteringAWGNwithBWL(BasicAWGNwithBWL):
        Bandwidth limited AWGN channel with learnable Rx filter.
     """
     def __init__(self, sps, snr_db, baud_rate, constellation, batch_size, learning_rate,
-                 rx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
-                 filter_init_type='dirac', print_interval=int(5e4), rrc_length_in_symbols=16, rrc_rolloff=0.5,
+                 rx_filter_length, tx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
+                 filter_init_type='dirac', print_interval=int(5e4), rrc_rolloff=0.5,
                  use_brickwall=False, use_1clr=False) -> None:
         super().__init__(sps, snr_db=snr_db, baud_rate=baud_rate,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
@@ -703,11 +707,11 @@ class RxFilteringAWGNwithBWL(BasicAWGNwithBWL):
                          batch_size=batch_size,
                          constellation=constellation,
                          learn_tx=False, learn_rx=True,
-                         tx_filter_length=None, rx_filter_length=rx_filter_length,
+                         rx_filter_length=rx_filter_length,
+                         tx_filter_length=tx_filter_length, 
                          rx_filter_init_type=filter_init_type,
                          tx_filter_init_type='rrc',
                          print_interval=print_interval,
-                         rrc_length_in_symbols=rrc_length_in_symbols,
                          rrc_rolloff=rrc_rolloff,
                          use_brickwall=use_brickwall,
                          use_1clr=use_1clr)
@@ -720,7 +724,7 @@ class JointTxRxAWGNwithBWL(BasicAWGNwithBWL):
     def __init__(self, sps, snr_db, baud_rate, constellation, batch_size, learning_rate,
                  rx_filter_length, tx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 print_interval=int(5e4), rrc_length_in_symbols=16, rrc_rolloff=0.5,
+                 print_interval=int(5e4), rrc_rolloff=0.5,
                  use_brickwall=False, use_1clr=False) -> None:
         super().__init__(sps, snr_db=snr_db, baud_rate=baud_rate,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
@@ -734,7 +738,6 @@ class JointTxRxAWGNwithBWL(BasicAWGNwithBWL):
                          rx_filter_length=rx_filter_length,
                          rx_filter_init_type=rx_filter_init_type,
                          print_interval=print_interval,
-                         rrc_length_in_symbols=rrc_length_in_symbols,
                          rrc_rolloff=rrc_rolloff,
                          use_brickwall=use_brickwall,
                          use_1clr=use_1clr)
@@ -751,12 +754,11 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
         Bandwidth limitation parameter is defined relative to the bandwidth of the RRC pulse.
     """
     def __init__(self, sps, snr_db, baud_rate, learning_rate, batch_size, constellation, adc_bwl_relative_cutoff,
-                 dac_bwl_relative_cutoff, learn_tx: bool, learn_rx: bool,
+                 dac_bwl_relative_cutoff, learn_tx: bool, learn_rx: bool, tx_filter_length: int, rx_filter_length: int,
                  non_linear_coefficients=(0.95, 0.04, 0.01), isi_filter1=np.array([0.2, -0.1, 0.9, 0.3]),
-                 isi_filter2=np.array([0.2, 0.9, 0.3]), tx_filter_length=None, rx_filter_length=None,
-                 tx_filter_init_type='rrc', rx_filter_init_type='rrc',
+                 isi_filter2=np.array([0.2, 0.9, 0.3]), tx_filter_init_type='rrc', rx_filter_init_type='rrc',
                  print_interval=int(5e4), use_brickwall=False, use_1clr=False,
-                 rrc_length_in_symbols=16, rrc_rolloff=0.5) -> None:
+                 rrc_rolloff=0.5) -> None:
         super().__init__(sps=sps,
                          snr_db=snr_db,
                          baud_rate=baud_rate,
@@ -766,27 +768,32 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
                          print_interval=print_interval,
                          use_1clr=use_1clr)
 
-        # Construct RRC filter
-        __, g = rrcosfilter(rrc_length_in_symbols * self.sps, rrc_rolloff, self.sym_length, 1 / self.Ts)
-        g = g[1::]  # delete first element to make filter odd length
-        assert len(g) % 2 == 1  # we assume that pulse is always odd
-        g = g / np.linalg.norm(g)
-        self.rrc_filter = g
-
         # Define pulse shaper
-        tx_filter_init = np.zeros_like(g) if tx_filter_length is None else np.zeros((tx_filter_length,), dtype=g.dtype)
+        tx_filter_init = np.zeros((tx_filter_length,))
         if learn_tx and tx_filter_init_type != 'rrc':
             tx_filter_init = filter_initialization(tx_filter_init, tx_filter_init_type)
         else:
-            tx_filter_init[0:len(g)] = np.copy(g)
+             # Construct RRC filter
+            __, g = rrcosfilter(tx_filter_length, rrc_rolloff, self.sym_length, 1 / self.Ts)
+            g = g[1::]  # delete first element to make filter odd length
+            assert len(g) % 2 == 1  # we assume that pulse is always odd
+            g = g / np.linalg.norm(g)
+            tx_filter_init = g
+
         self.pulse_shaper = FIRfilter(filter_weights=tx_filter_init, trainable=learn_tx)
 
         # Define rx filter - downsample to 1 sps as part of convolution (stride)
-        rx_filter_init = np.zeros_like(g) if rx_filter_length is None else np.zeros((rx_filter_length,), dtype=g.dtype)
+        rx_filter_init = np.zeros((rx_filter_length,))
         if learn_rx and rx_filter_init_type != 'rrc':
             rx_filter_init = filter_initialization(rx_filter_init, rx_filter_init_type)
         else:
-            rx_filter_init[0:len(g)] = np.copy(g[::-1])
+             # Construct RRC filter
+            __, g = rrcosfilter(rx_filter_length, rrc_rolloff, self.sym_length, 1 / self.Ts)
+            g = g[1::]  # delete first element to make filter odd length
+            assert len(g) % 2 == 1  # we assume that pulse is always odd
+            g = g / np.linalg.norm(g)
+            rx_filter_init = g
+
         self.rx_filter = FIRfilter(filter_weights=rx_filter_init, trainable=learn_rx, stride=self.sps)
 
         # Define bandwidth limitation filters - low pass filter with cutoff relative to bw of RRC
@@ -950,9 +957,6 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
     def get_rx_filter(self):
         return self.rx_filter.get_filter()
 
-    def get_rrc(self):
-        return np.copy(self.rrc_filter)
-
     def get_total_isi(self):
         return np.convolve(self.isi_filter1.get_filter(), self.isi_filter2.get_filter())
 
@@ -963,11 +967,12 @@ class PulseShapingNonLinearISIChannel(NonLinearISIChannel):
     """
     def __init__(self, sps, snr_db, baud_rate, learning_rate, batch_size,
                  constellation, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
+                 tx_filter_length, rx_filter_length,
                  non_linear_coefficients=(0.95, 0.04, 0.01),
                  isi_filter1=np.array([0.2, -0.1, 0.9, 0.3]), isi_filter2=np.array([0.2, 0.9, 0.3]),
-                 tx_filter_length=None, tx_filter_init_type='rrc',
+                 tx_filter_init_type='rrc',
                  rx_filter_init_type='rrc', print_interval=int(50000), use_brickwall=False,
-                 use_1clr=False, rrc_length_in_symbols=16, rrc_rolloff=0.5) -> None:
+                 use_1clr=False, rrc_rolloff=0.5) -> None:
         super().__init__(sps=sps, snr_db=snr_db, baud_rate=baud_rate,
                          learning_rate=learning_rate, batch_size=batch_size,
                          constellation=constellation,
@@ -976,10 +981,10 @@ class PulseShapingNonLinearISIChannel(NonLinearISIChannel):
                          learn_tx=True, learn_rx=False,
                          non_linear_coefficients=non_linear_coefficients,
                          isi_filter1=isi_filter1, isi_filter2=isi_filter2,
-                         tx_filter_length=tx_filter_length, rx_filter_length=None,
+                         tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length,
                          tx_filter_init_type=tx_filter_init_type, rx_filter_init_type=rx_filter_init_type,
                          print_interval=print_interval, use_brickwall=use_brickwall, use_1clr=use_1clr,
-                         rrc_length_in_symbols=rrc_length_in_symbols, rrc_rolloff=rrc_rolloff)
+                         rrc_rolloff=rrc_rolloff)
 
 
 class RxFilteringNonLinearISIChannel(NonLinearISIChannel):
@@ -988,11 +993,10 @@ class RxFilteringNonLinearISIChannel(NonLinearISIChannel):
     """
     def __init__(self, sps, snr_db, baud_rate, learning_rate, batch_size,
                  constellation, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
-                 non_linear_coefficients=(0.95, 0.04, 0.01),
+                 rx_filter_length, tx_filter_length, non_linear_coefficients=(0.95, 0.04, 0.01),
                  isi_filter1=np.array([0.2, -0.1, 0.9, 0.3]), isi_filter2=np.array([0.2, 0.9, 0.3]),
-                 rx_filter_length=None, tx_filter_init_type='rrc',
-                 rx_filter_init_type='rrc', print_interval=int(50000), use_brickwall=False,
-                 use_1clr=False, rrc_length_in_symbols=16, rrc_rolloff=0.5) -> None:
+                 tx_filter_init_type='rrc', rx_filter_init_type='rrc', print_interval=int(50000),
+                 use_brickwall=False, use_1clr=False, rrc_rolloff=0.5) -> None:
         super().__init__(sps=sps, snr_db=snr_db, baud_rate=baud_rate,
                          learning_rate=learning_rate, batch_size=batch_size,
                          constellation=constellation,
@@ -1001,10 +1005,10 @@ class RxFilteringNonLinearISIChannel(NonLinearISIChannel):
                          learn_tx=False, learn_rx=True,
                          non_linear_coefficients=non_linear_coefficients,
                          isi_filter1=isi_filter1, isi_filter2=isi_filter2,
-                         tx_filter_length=None, rx_filter_length=rx_filter_length,
+                         tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length,
                          tx_filter_init_type=tx_filter_init_type, rx_filter_init_type=rx_filter_init_type,
                          print_interval=print_interval, use_brickwall=use_brickwall, use_1clr=use_1clr,
-                         rrc_length_in_symbols=rrc_length_in_symbols, rrc_rolloff=rrc_rolloff)
+                         rrc_rolloff=rrc_rolloff)
 
 
 class JointTxRxNonLinearISIChannel(NonLinearISIChannel):
@@ -1013,11 +1017,12 @@ class JointTxRxNonLinearISIChannel(NonLinearISIChannel):
     """
     def __init__(self, sps, snr_db, baud_rate, learning_rate, batch_size,
                  constellation, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
+                 tx_filter_length, rx_filter_length, 
                  non_linear_coefficients=(0.95, 0.04, 0.01),
                  isi_filter1=np.array([0.2, -0.1, 0.9, 0.3]), isi_filter2=np.array([0.2, 0.9, 0.3]),
-                 tx_filter_length=None, rx_filter_length=None, tx_filter_init_type='rrc',
+                 tx_filter_init_type='rrc',
                  rx_filter_init_type='rrc', print_interval=int(50000), use_brickwall=False,
-                 use_1clr=False, rrc_length_in_symbols=16, rrc_rolloff=0.5) -> None:
+                 use_1clr=False, rrc_rolloff=0.5) -> None:
         super().__init__(sps=sps, snr_db=snr_db, baud_rate=baud_rate,
                          learning_rate=learning_rate, batch_size=batch_size,
                          constellation=constellation,
@@ -1029,4 +1034,4 @@ class JointTxRxNonLinearISIChannel(NonLinearISIChannel):
                          tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length,
                          tx_filter_init_type=tx_filter_init_type, rx_filter_init_type=rx_filter_init_type,
                          print_interval=print_interval, use_brickwall=use_brickwall, use_1clr=use_1clr,
-                         rrc_length_in_symbols=rrc_length_in_symbols, rrc_rolloff=rrc_rolloff)
+                         rrc_rolloff=rrc_rolloff)

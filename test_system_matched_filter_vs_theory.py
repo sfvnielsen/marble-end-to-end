@@ -44,7 +44,9 @@ if __name__ == "__main__":
 
     # Create system object
     mf_system = BasicAWGN(sps=samples_pr_symbol, baud_rate=sym_rate, constellation=modulation_scheme.constellation,
-                          normalize_after_tx=True, rrc_length_in_symbols=pulse_length_in_symbols, rrc_rolloff=rolloff, snr_db=-90,
+                          tx_filter_length=pulse_length_in_symbols * samples_pr_symbol,
+                          rx_filter_length=pulse_length_in_symbols * samples_pr_symbol,
+                          normalize_after_tx=True, rrc_rolloff=rolloff, snr_db=-90,
                           learn_rx=False, learn_tx=False, tx_filter_init_type='rrc', rx_filter_init_type='rrc',
                           learning_rate=0.0, batch_size=-1)
 

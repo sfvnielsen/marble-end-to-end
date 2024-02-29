@@ -39,8 +39,8 @@ if __name__ == "__main__":
     mod_order = 4  # PAM
     rrc_pulse_length_in_syms = 16
     rrc_rolloff = 0.5
-    learn_tx, tx_filter_length = True, None
-    learn_rx, rx_filter_length = True, 55
+    learn_tx, tx_filter_length = True, rrc_pulse_length_in_syms * samples_per_symbol
+    learn_rx, rx_filter_length = True, rrc_pulse_length_in_syms * samples_per_symbol
     dac_bwl_relative_cutoff = 0.75  # low-pass filter cuttoff relative to bandwidth of the RRC pulse
     adc_bwl_relative_cutoff = 0.75
     use_brickwall = False  # use brickwall filter instead of Bessel in the ADC/DAC (Experimental)
@@ -74,7 +74,7 @@ if __name__ == "__main__":
                                          isi_filter2=np.array([0.2, 0.001, 0.9,-0.01]),
                                          sps=samples_per_symbol, snr_db=train_snr_db, baud_rate=baud_rate,
                                          learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
-                                         learn_tx=learn_tx, learn_rx=learn_rx, rrc_length_in_symbols=rrc_pulse_length_in_syms, rrc_rolloff=rrc_rolloff,
+                                         learn_tx=learn_tx, learn_rx=learn_rx, rrc_rolloff=rrc_rolloff,
                                          tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr, use_brickwall=use_brickwall,
                                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                          tx_filter_init_type='rrc', rx_filter_init_type='rrc')
