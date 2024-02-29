@@ -72,7 +72,7 @@ if __name__ == "__main__":
     non_lin_system = NonLinearISIChannel(non_linear_coefficients=non_linear_coefs,
                                          isi_filter1=np.array([0.2, 0.9, 0.01, 0.02, 0.03]),
                                          isi_filter2=np.array([0.2, 0.001, 0.9,-0.01]),
-                                         sps=samples_per_symbol, snr_db=train_snr_db, baud_rate=baud_rate,
+                                         sps=samples_per_symbol, esn0_db=train_snr_db, baud_rate=baud_rate,
                                          learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                          learn_tx=learn_tx, learn_rx=learn_rx, rrc_rolloff=rrc_rolloff,
                                          tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr, use_brickwall=use_brickwall,
@@ -102,7 +102,7 @@ if __name__ == "__main__":
     n_bits = int(np.log2(len(modulation_scheme.constellation)) * n_symbols_val)
     bit_sequence = random_obj.integers(0, 2, size=n_bits)
     a = modulation_scheme.modulate(bit_sequence)
-    non_lin_system.set_snr(eval_snr_db)
+    non_lin_system.set_esn0_db(eval_snr_db)
     ahat = non_lin_system.evaluate(a)
     ser, delay = calc_ser_pam(ahat, a, discard=100)
     print(f"SER: {ser} (delay: {delay})")

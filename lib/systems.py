@@ -212,9 +212,9 @@ class LearnableTransmissionSystem(object):
     """
         Parent class for end-to-end learning.
     """
-    def __init__(self, sps, snr_db, baud_rate, learning_rate, batch_size, constellation,
+    def __init__(self, sps, esn0_db, baud_rate, learning_rate, batch_size, constellation,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(5e4)) -> None:
-        self.snr_db = snr_db
+        self.esn0_db = esn0_db
         self.baud_rate = baud_rate
         self.learning_rate = learning_rate  # learning rate of optimizer
         self.sps = sps  # samples pr symbol
@@ -234,8 +234,8 @@ class LearnableTransmissionSystem(object):
     def initialize_optimizer(self):
         self.optimizer = torch.optim.Adam(self.get_parameters(), lr=self.learning_rate)
 
-    def set_snr(self, new_snr_db):
-        self.snr_db = new_snr_db
+    def set_esn0_db(self, new_esn0_db):
+        self.esn0_db = new_esn0_db
 
     def forward(self, symbols_up: torch.TensorType) -> torch.TensorType:
         raise NotImplementedError
@@ -253,7 +253,19 @@ class LearnableTransmissionSystem(object):
         raise NotImplementedError
 
     def get_esn0_db(self):
-        raise NotImplementedError
+        return self.esn0_db
+
+    def calculate_noise_std(self, input_signal):
+        """
+            Calculate the standard deviation of AWGN with desired EsN0 based on an input signal
+        """
+        esn0 = (10 ** (self.esn0_db / 10.0))  # linear domain EsN0 ratio
+        # Calculate empirical average energy pr. symbol of input signal
+        es = torch.mean(torch.sum(torch.square(torch.reshape(input_signal, (-1, self.sps))), dim=1))
+        # Converting average energy pr. symbol into base power (cf. https://wirelesspi.com/pulse-amplitude-modulation-pam/)
+        base_power_pam = es * (3 / (len(self.constellation)**2 - 1))
+        n0 =  base_power_pam / esn0  # derive noise variance
+        return torch.sqrt(n0)
 
     def update_model(self, loss):
         loss.backward()
@@ -322,11 +334,11 @@ class BasicAWGN(LearnableTransmissionSystem):
     """
         Basic additive white Gaussian noise system with pulse-shaping by RRC
     """
-    def __init__(self, sps, snr_db, baud_rate, learning_rate, batch_size, constellation, learn_tx: bool, learn_rx: bool, print_interval=int(5e4),
+    def __init__(self, sps, esn0_db, baud_rate, learning_rate, batch_size, constellation, learn_tx: bool, learn_rx: bool, print_interval=int(5e4),
                  normalize_after_tx=True, tx_filter_length=45, rx_filter_length=45,
                  tx_filter_init_type='dirac', rx_filter_init_type='dirac', rrc_rolloff=0.5, use_1clr=False) -> None:
         super().__init__(sps=sps,
-                         snr_db=snr_db,
+                         esn0_db=esn0_db,
                          baud_rate=baud_rate,
                          learning_rate=learning_rate,
                          batch_size=batch_size,
@@ -369,10 +381,6 @@ class BasicAWGN(LearnableTransmissionSystem):
         # Calculate constellation scale
         self.constellation_scale = np.sqrt(np.average(np.square(constellation)))
 
-        # Define noise level based on desired snr
-        Es = 1.0 if self.normalize_after_tx else self.constellation_scale ** 2
-        self.noise_std = np.sqrt(Es / (2 * 10 ** (self.snr_db / 10)))
-
         # Define number of symbols to discard pr. batch due to boundary effects of convolution
         self.discard_per_batch = int((self.pulse_shaper.filter_length + self.rx_filter.filter_length) / self.sps)
 
@@ -381,19 +389,6 @@ class BasicAWGN(LearnableTransmissionSystem):
         params_to_return.append({"params": self.pulse_shaper.parameters()})
         params_to_return.append({"params": self.rx_filter.parameters()})
         return params_to_return
-
-    def set_snr(self, new_snr_db):
-        super().set_snr(new_snr_db)
-        # set noise std of the AWGN channel based on new SNR
-        Es = 1.0 if self.normalize_after_tx else self.constellation_scale ** 2
-        self.noise_std = np.sqrt(Es / (2 * 10 ** (self.snr_db / 10)))
-
-    def get_esn0_db(self):
-        # If we normalize, noise is scaled implicitly due to rescaling the output of the rx_filter to the constellation
-        noise_scaling = 1.0
-        if self.normalize_after_tx:
-            noise_scaling = self.normalization_constant
-        return 10.0 * np.log10(1.0 / (self.noise_std * noise_scaling) ** 2)
 
     def zero_gradients(self):
         self.pulse_shaper.zero_grad()
@@ -407,8 +402,11 @@ class BasicAWGN(LearnableTransmissionSystem):
         # Normalize (if self.normalization_after_tx is set, else norm_constant = 1.0)
         x = x / self.normalization_constant
 
-        # Add white noise
-        y = x + self.noise_std * torch.randn(x.shape)
+        # Add white noise based on desired EsN0
+        with torch.no_grad():
+            noise_std = self.calculate_noise_std(x)
+
+        y = x + noise_std * torch.randn(x.shape)
 
         # Apply rx filter
         rx_filter_out = self.rx_filter.forward(y)
@@ -428,7 +426,8 @@ class BasicAWGN(LearnableTransmissionSystem):
         x = x / self.normalization_constant
 
         # Add white noise
-        y = x + self.noise_std * torch.randn(x.shape)
+        noise_std = self.calculate_noise_std(x)
+        y = x + noise_std * torch.randn(x.shape)
 
         # Apply rx filter
         rx_filter_out = self.rx_filter.forward_batched(y, batch_size)
@@ -459,10 +458,10 @@ class PulseShapingAWGN(BasicAWGN):
     """
         Special case of the BasicAWGN model learning the Tx filter (Rx filter set to RRC)
     """
-    def __init__(self, sps, snr_db, baud_rate, constellation, batch_size, learning_rate, tx_filter_length,
+    def __init__(self, sps, esn0_db, baud_rate, constellation, batch_size, learning_rate, tx_filter_length,
                  rx_filter_length, print_interval=int(50000), rrc_rolloff=0.5,
                  normalize_after_tx=True, filter_init_type='dirac', use_1clr=False) -> None:
-        super().__init__(sps, snr_db=snr_db, baud_rate=baud_rate,
+        super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          learning_rate=learning_rate, batch_size=batch_size,
                          constellation=constellation,
                          learn_tx=True, learn_rx=False,
@@ -480,10 +479,10 @@ class RxFilteringAWGN(BasicAWGN):
     """
         Special case of the BasicAWGN model learning the Rx filter (Tx filter set to RRC)
     """
-    def __init__(self, sps, snr_db, baud_rate, constellation, batch_size, learning_rate, rx_filter_length,
+    def __init__(self, sps, esn0_db, baud_rate, constellation, batch_size, learning_rate, rx_filter_length,
                  tx_filter_length, print_interval=int(50000), rrc_rolloff=0.5,
                  normalize_after_tx=True, filter_init_type='dirac', use_1clr=False) -> None:
-        super().__init__(sps, snr_db=snr_db, baud_rate=baud_rate,
+        super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          learning_rate=learning_rate, batch_size=batch_size,
                          constellation=constellation,
                          learn_tx=False, learn_rx=True,
@@ -502,14 +501,14 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         Basic additive white Gaussian noise system with pulse-shaping by RRC and bandwidth limitation
         Bandwidth limitation parameter is defined relative to the bandwidth of the RRC pulse.
     """
-    def __init__(self, sps, snr_db, baud_rate, learning_rate, batch_size, constellation,
+    def __init__(self, sps, esn0_db, baud_rate, learning_rate, batch_size, constellation,
                  tx_filter_length: int, rx_filter_length: int, adc_bwl_relative_cutoff,
                  dac_bwl_relative_cutoff, learn_tx: bool, learn_rx: bool,
                  tx_filter_init_type='dirac', rx_filter_init_type='dirac',
                  print_interval=int(5e4), use_brickwall=False, use_1clr=False,
                  rrc_rolloff=0.5) -> None:
         super().__init__(sps=sps,
-                         snr_db=snr_db,
+                         esn0_db=esn0_db,
                          baud_rate=baud_rate,
                          learning_rate=learning_rate,
                          batch_size=batch_size,
@@ -550,20 +549,11 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
 
         # Digital-to-analog (DAC) converter
         self.dac = AllPassFilter()
-        self.Es = 1.0  # default energy-per-symbol
         if dac_bwl_relative_cutoff is not None:
             if use_brickwall:
                 self.dac = BrickWallFilter(filter_length=512, cutoff_hz=rrc_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
             else:
                 self.dac = BesselFilter(bessel_order=5, cutoff_hz=rrc_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
-
-            # If DAC bandwidth-limitation is enabled, rescale energy-per-symbol - calculate energy of LP filter in the baud_rate band
-            dac_b, dac_a = self.dac.get_filters()
-            f, H = freqz(dac_b, dac_a, worN=2048, fs=1/self.Ts, whole=True)
-            Hshifted = fftshift(H)
-            f_all = np.arange(-len(f)//2, len(f)//2) / (len(f) * self.Ts)
-            Htrunc = Hshifted[np.where(np.logical_and(f_all < baud_rate / 2, f_all > - baud_rate / 2))]
-            self.Es = np.mean(np.absolute(Htrunc) ** 2)
 
         # Analog-to-digial (ADC) converter
         self.adc = AllPassFilter()
@@ -574,8 +564,6 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
             else:
                 self.adc = BesselFilter(bessel_order=5, cutoff_hz=rrc_bw * adc_bwl_relative_cutoff, fs=1/self.Ts)
 
-        # Define noise level based on desired snr
-        self.noise_std = np.sqrt(self.Es / (2 * 10 ** (self.snr_db / 10)))
         self.normalization_constant = np.sqrt(np.average(np.square(self.constellation)) / self.sps)
 
         # Define number of symbols to discard pr. batch due to boundary effects of convolution
@@ -589,14 +577,6 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         params_to_return.append({"params": self.pulse_shaper.parameters()})
         params_to_return.append({"params": self.rx_filter.parameters()})
         return params_to_return
-
-    def set_snr(self, new_snr_db):
-        super().set_snr(new_snr_db)
-        # set noise std of the AWGN channel based on new SNR
-        self.noise_std = np.sqrt(self.Es / (2 * 10 ** (self.snr_db / 10)))
-
-    def get_esn0_db(self):
-        return 10.0 * np.log10(self.Es / (self.noise_std * self.normalization_constant) ** 2)
 
     def zero_gradients(self):
         self.pulse_shaper.zero_grad()
@@ -614,7 +594,9 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         x_lp = self.dac.forward(x)
 
         # Add white noise
-        y = x_lp + self.noise_std * torch.randn(x_lp.shape)
+        with torch.no_grad():
+            noise_std = self.calculate_noise_std(x_lp)
+        y = x_lp + noise_std * torch.randn(x_lp.shape)
 
         # Apply bandwidth limitation in the ADC
         y_lp = self.adc.forward(y)
@@ -639,7 +621,8 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         x_lp = self.dac.forward_batched(x, batch_size)
 
         # Add white noise
-        y = x_lp + self.noise_std * torch.randn(x_lp.shape)
+        noise_std = self.calculate_noise_std(x_lp)
+        y = x_lp + noise_std * torch.randn(x_lp.shape)
 
         # Apply band-width limitation in the ADC
         y_lp = self.adc.forward_batched(y, batch_size)
@@ -672,11 +655,11 @@ class PulseShapingAWGNwithBWL(BasicAWGNwithBWL):
     """
         PulseShaper in bandwidth limited AWGN channel
     """
-    def __init__(self, sps, snr_db, baud_rate, constellation, batch_size, learning_rate,
+    def __init__(self, sps, esn0_db, baud_rate, constellation, batch_size, learning_rate,
                  tx_filter_length, rx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
                  filter_init_type='dirac', print_interval=int(5e4), rrc_rolloff=0.5,
                  use_brickwall=False, use_1clr=False) -> None:
-        super().__init__(sps, snr_db=snr_db, baud_rate=baud_rate,
+        super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                          learning_rate=learning_rate,
@@ -696,11 +679,11 @@ class RxFilteringAWGNwithBWL(BasicAWGNwithBWL):
     """
        Bandwidth limited AWGN channel with learnable Rx filter.
     """
-    def __init__(self, sps, snr_db, baud_rate, constellation, batch_size, learning_rate,
+    def __init__(self, sps, esn0_db, baud_rate, constellation, batch_size, learning_rate,
                  rx_filter_length, tx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
                  filter_init_type='dirac', print_interval=int(5e4), rrc_rolloff=0.5,
                  use_brickwall=False, use_1clr=False) -> None:
-        super().__init__(sps, snr_db=snr_db, baud_rate=baud_rate,
+        super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                          learning_rate=learning_rate,
@@ -708,7 +691,7 @@ class RxFilteringAWGNwithBWL(BasicAWGNwithBWL):
                          constellation=constellation,
                          learn_tx=False, learn_rx=True,
                          rx_filter_length=rx_filter_length,
-                         tx_filter_length=tx_filter_length, 
+                         tx_filter_length=tx_filter_length,
                          rx_filter_init_type=filter_init_type,
                          tx_filter_init_type='rrc',
                          print_interval=print_interval,
@@ -721,12 +704,12 @@ class JointTxRxAWGNwithBWL(BasicAWGNwithBWL):
     """
        Bandwidth limited AWGN channel with learnable Tx and Rx filter.
     """
-    def __init__(self, sps, snr_db, baud_rate, constellation, batch_size, learning_rate,
+    def __init__(self, sps, esn0_db, baud_rate, constellation, batch_size, learning_rate,
                  rx_filter_length, tx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  print_interval=int(5e4), rrc_rolloff=0.5,
                  use_brickwall=False, use_1clr=False) -> None:
-        super().__init__(sps, snr_db=snr_db, baud_rate=baud_rate,
+        super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                          learning_rate=learning_rate,
@@ -753,14 +736,14 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
         The coefficients a = [a_0, a_1, a_2] are specified as the input argument 'non_linear_coefficients'
         Bandwidth limitation parameter is defined relative to the bandwidth of the RRC pulse.
     """
-    def __init__(self, sps, snr_db, baud_rate, learning_rate, batch_size, constellation, adc_bwl_relative_cutoff,
+    def __init__(self, sps, esn0_db, baud_rate, learning_rate, batch_size, constellation, adc_bwl_relative_cutoff,
                  dac_bwl_relative_cutoff, learn_tx: bool, learn_rx: bool, tx_filter_length: int, rx_filter_length: int,
                  non_linear_coefficients=(0.95, 0.04, 0.01), isi_filter1=np.array([0.2, -0.1, 0.9, 0.3]),
                  isi_filter2=np.array([0.2, 0.9, 0.3]), tx_filter_init_type='rrc', rx_filter_init_type='rrc',
                  print_interval=int(5e4), use_brickwall=False, use_1clr=False,
                  rrc_rolloff=0.5) -> None:
         super().__init__(sps=sps,
-                         snr_db=snr_db,
+                         esn0_db=esn0_db,
                          baud_rate=baud_rate,
                          learning_rate=learning_rate,
                          batch_size=batch_size,
@@ -801,7 +784,6 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
 
         # Digital-to-analog (DAC) converter
         self.dac = AllPassFilter()
-        self.Es = 1.0  # default energy-per-symbol
         if dac_bwl_relative_cutoff is not None:
             if use_brickwall:
                 self.dac = BrickWallFilter(filter_length=512, cutoff_hz=rrc_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
@@ -831,26 +813,6 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
         h2_isi_zeropadded = h2_isi_zeropadded / np.linalg.norm(h2_isi_zeropadded)
         self.isi_filter2 = FIRfilter(filter_weights=h2_isi_zeropadded)
 
-        # Calculate energy-per-symbol (everything up to addition of noise)
-        self.Es = 1.0  # default energy pr. symbol
-        total_isi = np.convolve(h1_isi_zeropadded, h2_isi_zeropadded)
-        f, H = freqz(total_isi, 1, worN=2048, fs=1/self.Ts, whole=True)
-        Hshifted = fftshift(H)
-        f_all = np.arange(-len(f)//2, len(f)//2) / (len(f) * self.Ts)
-        Htrunc = Hshifted[np.where(np.logical_and(f_all < baud_rate / 2, f_all > - baud_rate / 2))]
-        self.Es = self.Es * np.mean(np.absolute(Htrunc) ** 2)
-
-        # If DAC bandwidth-limitation is enabled, rescale energy-per-symbol - calculate energy of LP filter in the baud_rate band
-        if dac_bwl_relative_cutoff is not None:
-            dac_b, dac_a = self.dac.get_filters()
-            f, H = freqz(dac_b, dac_a, worN=2048, fs=1/self.Ts, whole=True)
-            Hshifted = fftshift(H)
-            f_all = np.arange(-len(f)//2, len(f)//2) / (len(f) * self.Ts)
-            Htrunc = Hshifted[np.where(np.logical_and(f_all < baud_rate / 2, f_all > - baud_rate / 2))]
-            self.Es = self.Es * np.mean(np.absolute(Htrunc) ** 2)
-
-        # Define noise level based on desired snr
-        self.noise_std = np.sqrt(self.Es / (2 * 10 ** (self.snr_db / 10)))
         self.normalization_constant = np.sqrt(np.average(np.square(self.constellation)) / self.sps)
 
         # Define number of symbols to discard pr. batch due to boundary effects of convolution
@@ -868,14 +830,6 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
         params_to_return.append({"params": self.pulse_shaper.parameters()})
         params_to_return.append({"params": self.rx_filter.parameters()})
         return params_to_return
-
-    def set_snr(self, new_snr_db):
-        super().set_snr(new_snr_db)
-        # set noise std of the AWGN channel based on new SNR
-        self.noise_std = np.sqrt(self.Es / (2 * 10 ** (self.snr_db / 10)))
-
-    def get_esn0_db(self):
-        return 10.0 * np.log10(self.Es / (self.noise_std * self.normalization_constant) ** 2)
 
     def zero_gradients(self):
         self.pulse_shaper.zero_grad()
@@ -898,7 +852,9 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
         x_nl = self.isi_filter2.forward(x_nl)
 
         # Add white noise
-        y = x_nl + self.noise_std * torch.randn(x_nl.shape)
+        with torch.no_grad():
+            noise_std = self.calculate_noise_std(x_nl)
+        y = x_nl + noise_std * torch.randn(x_nl.shape)
 
         # Apply bandwidth limitation in the ADC
         y_lp = self.adc.forward(y)
@@ -928,7 +884,8 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
         x_nl = self.isi_filter2.forward_batched(x_nl, batch_size)
 
         # Add white noise
-        y = x_nl + self.noise_std * torch.randn(x_nl.shape)
+        noise_std = self.calculate_noise_std(x_nl)
+        y = x_nl + noise_std * torch.randn(x_nl.shape)
 
         # Apply band-width limitation in the ADC
         y_lp = self.adc.forward_batched(y, batch_size)
@@ -965,14 +922,14 @@ class PulseShapingNonLinearISIChannel(NonLinearISIChannel):
     """
         Learning the Tx filter in the non-linear isi channel
     """
-    def __init__(self, sps, snr_db, baud_rate, learning_rate, batch_size,
+    def __init__(self, sps, esn0_db, baud_rate, learning_rate, batch_size,
                  constellation, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
                  tx_filter_length, rx_filter_length,
                  non_linear_coefficients=(0.95, 0.04, 0.01),
                  isi_filter1=np.array([0.2, -0.1, 0.9, 0.3]), isi_filter2=np.array([0.2, 0.9, 0.3]),
                  filter_init_type='rrc', print_interval=int(50000), use_brickwall=False,
                  use_1clr=False, rrc_rolloff=0.5) -> None:
-        super().__init__(sps=sps, snr_db=snr_db, baud_rate=baud_rate,
+        super().__init__(sps=sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          learning_rate=learning_rate, batch_size=batch_size,
                          constellation=constellation,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
@@ -990,13 +947,13 @@ class RxFilteringNonLinearISIChannel(NonLinearISIChannel):
     """
         Learning the Rx filter in the non-linear isi channel
     """
-    def __init__(self, sps, snr_db, baud_rate, learning_rate, batch_size,
+    def __init__(self, sps, esn0_db, baud_rate, learning_rate, batch_size,
                  constellation, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
                  rx_filter_length, tx_filter_length, non_linear_coefficients=(0.95, 0.04, 0.01),
                  isi_filter1=np.array([0.2, -0.1, 0.9, 0.3]), isi_filter2=np.array([0.2, 0.9, 0.3]),
                  filter_init_type='rrc', print_interval=int(50000),
                  use_brickwall=False, use_1clr=False, rrc_rolloff=0.5) -> None:
-        super().__init__(sps=sps, snr_db=snr_db, baud_rate=baud_rate,
+        super().__init__(sps=sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          learning_rate=learning_rate, batch_size=batch_size,
                          constellation=constellation,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
@@ -1014,15 +971,15 @@ class JointTxRxNonLinearISIChannel(NonLinearISIChannel):
     """
         Learning both Tx and Rx filters in the non-linear isi channel
     """
-    def __init__(self, sps, snr_db, baud_rate, learning_rate, batch_size,
+    def __init__(self, sps, esn0_db, baud_rate, learning_rate, batch_size,
                  constellation, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
-                 tx_filter_length, rx_filter_length, 
+                 tx_filter_length, rx_filter_length,
                  non_linear_coefficients=(0.95, 0.04, 0.01),
                  isi_filter1=np.array([0.2, -0.1, 0.9, 0.3]), isi_filter2=np.array([0.2, 0.9, 0.3]),
                  tx_filter_init_type='rrc',
                  rx_filter_init_type='rrc', print_interval=int(50000), use_brickwall=False,
                  use_1clr=False, rrc_rolloff=0.5) -> None:
-        super().__init__(sps=sps, snr_db=snr_db, baud_rate=baud_rate,
+        super().__init__(sps=sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          learning_rate=learning_rate, batch_size=batch_size,
                          constellation=constellation,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,

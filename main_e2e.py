@@ -68,7 +68,7 @@ if __name__ == "__main__":
     batch_size = 1000
 
     # Initialize learnable transmission system
-    awgn_system = BasicAWGNwithBWL(sps=samples_per_symbol, snr_db=train_snr_db, baud_rate=baud_rate,
+    awgn_system = BasicAWGNwithBWL(sps=samples_per_symbol, esn0_db=train_snr_db, baud_rate=baud_rate,
                                    learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                    learn_tx=learn_tx, learn_rx=learn_rx, rrc_rolloff=rrc_rolloff,
                                    tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr, use_brickwall=use_brickwall,
@@ -94,12 +94,11 @@ if __name__ == "__main__":
     if learn_tx or learn_rx:
         awgn_system.optimize(a)
 
-
     # Generate validation data and caclulate SER on that with learned filters
     n_bits = int(np.log2(len(modulation_scheme.constellation)) * n_symbols_val)
     bit_sequence = random_obj.integers(0, 2, size=n_bits)
     a = modulation_scheme.modulate(bit_sequence)
-    awgn_system.set_snr(eval_snr_db)
+    awgn_system.set_esn0_db(eval_snr_db)
     ahat = awgn_system.evaluate(a)
     ser, delay = calc_ser_pam(ahat, a, discard=100)
     print(f"SER: {ser} (delay: {delay})")

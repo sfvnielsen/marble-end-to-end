@@ -18,7 +18,7 @@ if __name__ == "__main__":
     n_symbols = int(1e6)
 
     normalize_after_tx = True
-    snr_db = np.arange(0, 10.0, 1.0)
+    esn0_db = np.arange(0, 10.0, 1.0)
 
     sym_rate = int(10e6)  # baud - number of transmitted symbols pr second
     sym_length = 1 / sym_rate
@@ -46,26 +46,25 @@ if __name__ == "__main__":
     mf_system = BasicAWGN(sps=samples_pr_symbol, baud_rate=sym_rate, constellation=modulation_scheme.constellation,
                           tx_filter_length=pulse_length_in_symbols * samples_pr_symbol,
                           rx_filter_length=pulse_length_in_symbols * samples_pr_symbol,
-                          normalize_after_tx=True, rrc_rolloff=rolloff, snr_db=-90,
+                          normalize_after_tx=False, rrc_rolloff=rolloff, esn0_db=-90,
                           learn_rx=False, learn_tx=False, tx_filter_init_type='rrc', rx_filter_init_type='rrc',
                           learning_rate=0.0, batch_size=-1)
 
     esn0_db_list = []
 
     # Loop over experiments
-    for snr in snr_db:
+    for snr in esn0_db:
         print(f"Running experiments for SNR: {snr}", flush=True)
-        mf_system.set_snr(snr)
+        mf_system.set_esn0_db(snr)
         avg_ser = 0.0
 
         for nrep in range(reps):
             # Initialize result dictionary for this experiment
             res_dict = dict()
-            res_dict['snr'] = snr
+            res_dict['esn0_db'] = snr
             res_dict['rep'] = nrep
             res_dict['rrc_rolloff'] = rolloff
             res_dict['method'] = 'Matched filter'
-            res_dict['esn0_db'] = mf_system.get_esn0_db()
 
             # Create data - matched filter already applied and then decimated
             syms = random_obj.choice(modulation_scheme.constellation, size=(n_symbols,), replace=True)
@@ -76,19 +75,17 @@ if __name__ == "__main__":
             results.append(res_dict)
             avg_ser += ser / reps
 
-        print(f"Average SER: {avg_ser} at EsN0: {mf_system.get_esn0_db()}")
-        esn0_db_list.append(mf_system.get_esn0_db())
+        print(f"Average SER: {avg_ser} at EsN0: {snr}")
 
     # Calculate theoretical SER
-    for esn0_db in esn0_db_list:
-        theo_ser = calc_theory_ser_pam(order, esn0_db)
+    for this_esn0_db in esn0_db:
+        theo_ser = calc_theory_ser_pam(order, this_esn0_db)
 
         res_dict = dict()
-        res_dict['snr'] = np.nan
         res_dict['rep'] = np.nan
         res_dict['rrc_rolloff'] = np.nan
         res_dict['ser'] = theo_ser
-        res_dict['esn0_db'] = esn0_db
+        res_dict['esn0_db'] = this_esn0_db
         res_dict['method'] = 'Theoretical'
         results.append(res_dict)
         print(f"Method: Theoretical, SER: {theo_ser}", flush=True)
