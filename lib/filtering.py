@@ -3,7 +3,7 @@ from torch.nn import functional as torchF
 from torchaudio.functional import convolve, lfilter
 import numpy.typing as npt
 import numpy as np
-from scipy.signal import bessel
+from scipy.signal import bessel, group_delay
 
 # FIXME: Simplify these operations
 # FIXME: Switch to torchaudio.functional.convolve - does true convolution
@@ -32,6 +32,8 @@ class AllPassFilter(torch.nn.Module):
     def get_filters(self):
         return None, None
 
+    def get_sample_delay(self):
+        return 0
 
 class FIRfilter(torch.nn.Module):
     def __init__(self, filter_weights: npt.ArrayLike, stride=1, normalize=False, trainable=False, dtype=torch.float64, *args, **kwargs) -> None:
@@ -114,6 +116,9 @@ class BesselFilter(torch.nn.Module):
         super().__init__(*args, **kwargs)
         bessel_b, bessel_a = bessel(bessel_order, cutoff_hz, fs=fs, norm='mag')
         self.filter_b, self.filter_a = torch.from_numpy(bessel_b), torch.from_numpy(bessel_a)
+        # Crude estimate of sample delay through filter - take average in passband
+        f, gd = group_delay((bessel_b, bessel_a), fs=fs)
+        self.delay = np.average(gd[np.where(f < cutoff_hz)])
 
     def forward(self, x):
         # lfilter assumes input is between -1 and 1. Do so and rescale afterwards.
@@ -126,6 +131,9 @@ class BesselFilter(torch.nn.Module):
 
     def get_filters(self):
         return self.filter_b.detach().cpu().numpy(), self.filter_a.detach().cpu().numpy()
+    
+    def get_sample_delay(self):
+        return self.delay
 
 
 class BrickWallFilter(torch.nn.Module):

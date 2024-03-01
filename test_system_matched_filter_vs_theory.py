@@ -18,7 +18,7 @@ if __name__ == "__main__":
     n_symbols = int(1e6)
 
     normalize_after_tx = True
-    esn0_db = np.arange(0, 10.0, 1.0)
+    esn0_db = np.arange(0, 11.0, 1.0)
 
     sym_rate = int(10e6)  # baud - number of transmitted symbols pr second
     sym_length = 1 / sym_rate
