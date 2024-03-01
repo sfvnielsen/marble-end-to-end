@@ -374,7 +374,7 @@ class BasicAWGN(LearnableTransmissionSystem):
         self.noise_std = np.sqrt(Es / (2 * 10 ** (self.snr_db / 10)))
 
         # Define number of symbols to discard pr. batch due to boundary effects of convolution
-        self.discard_per_batch = int(((len(g) - 1) // 2) / self.sps)
+        self.discard_per_batch = int((self.pulse_shaper.filter_length + self.rx_filter.filter_length) / self.sps)
 
     def get_parameters(self):
         params_to_return = []
@@ -579,7 +579,7 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         self.normalization_constant = np.sqrt(np.average(np.square(self.constellation)) / self.sps)
 
         # Define number of symbols to discard pr. batch due to boundary effects of convolution
-        self.discard_per_batch = int(((len(g) - 1) // 2) / self.sps)
+        self.discard_per_batch = int((self.pulse_shaper.filter_length + self.rx_filter.filter_length) / self.sps)
 
         # Calculate constellation scale
         self.constellation_scale = np.sqrt(np.average(np.square(constellation)))
