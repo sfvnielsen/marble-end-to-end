@@ -572,6 +572,10 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         # Calculate constellation scale
         self.constellation_scale = np.sqrt(np.average(np.square(constellation)))
 
+        # Total symbol delay introduced by the two LPFs
+        self.channel_delay = int(np.ceil((self.adc.get_sample_delay() + self.dac.get_sample_delay())/self.sps))
+        print(f"Channel delay is {self.channel_delay}")
+
     def get_parameters(self):
         params_to_return = []
         params_to_return.append({"params": self.pulse_shaper.parameters()})
@@ -636,7 +640,7 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         return rx_filter_out
 
     def calculate_loss(self, tx_syms: torch.TensorType, rx_syms: torch.TensorType):
-        return torch.mean(torch.square(tx_syms[self.discard_per_batch:-self.discard_per_batch] - rx_syms[self.discard_per_batch:-self.discard_per_batch]))
+        return torch.mean(torch.square(torch.roll(tx_syms[self.discard_per_batch:-self.discard_per_batch], self.channel_delay, 0) - rx_syms[self.discard_per_batch:-self.discard_per_batch]))
 
     def update_model(self, loss):
         super().update_model(loss)
