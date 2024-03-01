@@ -6,7 +6,7 @@ import numpy.typing as npt
 import numpy as np
 import torch
 
-from scipy.signal import bessel, lfilter, freqz
+from scipy.signal import bessel, lfilter, freqz, group_delay
 from scipy.fft import fftshift
 from commpy.filters import rrcosfilter
 
@@ -574,7 +574,7 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
 
         # Total symbol delay introduced by the two LPFs
         self.channel_delay = int(np.ceil((self.adc.get_sample_delay() + self.dac.get_sample_delay())/self.sps))
-        print(f"Channel delay is {self.channel_delay}")
+        print(f"Channel delay is {self.channel_delay} [symbols]")
 
     def get_parameters(self):
         params_to_return = []
@@ -640,7 +640,7 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         return rx_filter_out
 
     def calculate_loss(self, tx_syms: torch.TensorType, rx_syms: torch.TensorType):
-        return torch.mean(torch.square(torch.roll(tx_syms[self.discard_per_batch:-self.discard_per_batch], self.channel_delay, 0) - rx_syms[self.discard_per_batch:-self.discard_per_batch]))
+        return torch.mean(torch.square(tx_syms[self.discard_per_batch:-self.discard_per_batch] - torch.roll(rx_syms, -self.channel_delay)[self.discard_per_batch:-self.discard_per_batch]))
 
     def update_model(self, loss):
         super().update_model(loss)
@@ -817,14 +817,22 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
         h2_isi_zeropadded = h2_isi_zeropadded / np.linalg.norm(h2_isi_zeropadded)
         self.isi_filter2 = FIRfilter(filter_weights=h2_isi_zeropadded)
 
+        # Estimate the sample delay introduced by the ISI filters
+        f, gd = group_delay((h1_isi_zeropadded, 1), fs=1/self.Ts)
+        isi1_delay = np.average(gd[np.where(f < rrc_bw)])
+        f, gd = group_delay((h2_isi_zeropadded, 1), fs=1/self.Ts)
+        isi2_delay = np.average(gd[np.where(f < rrc_bw)])
+        isi_delay = isi1_delay + isi2_delay
+
+        # Calculate normalization constant after Tx filter
         self.normalization_constant = np.sqrt(np.average(np.square(self.constellation)) / self.sps)
 
         # Define number of symbols to discard pr. batch due to boundary effects of convolution
         self.discard_per_batch = int(((self.pulse_shaper.filter_length + self.rx_filter.filter_length) // 2) / self.sps)
 
-        # FIXME: How to define appropriate delay of the channel?
-        #self.channel_delay = np.argmax(np.convolve(isi_filter1, isi_filter2)) - len(isi_filter1) + 1  # delay introduced by the channel [symbols]
-        self.channel_delay = 0
+        # Calculate estimate of channel delay (in symbols)
+        self.channel_delay = int(np.ceil((isi_delay + self.adc.get_sample_delay() + self.dac.get_sample_delay()) / sps))
+        print(f"Channel delay is {self.channel_delay} [symbols] (ISI contributed with {int(np.ceil(isi_delay / sps))})")
 
         # Calculate constellation scale
         self.constellation_scale = np.sqrt(np.average(np.square(constellation)))

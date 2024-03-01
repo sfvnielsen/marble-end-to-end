@@ -37,10 +37,9 @@ if __name__ == "__main__":
     train_snr_db = 8.0  # SNR (EsN0) at which the system in trained in
     eval_snr_db = train_snr_db
     mod_order = 4  # PAM
-    rrc_pulse_length_in_syms = 16
     rrc_rolloff = 0.5
-    learn_tx, tx_filter_length = True, rrc_pulse_length_in_syms * samples_per_symbol
-    learn_rx, rx_filter_length = True, rrc_pulse_length_in_syms * samples_per_symbol
+    learn_tx, tx_filter_length = True, 40
+    learn_rx, rx_filter_length = True, 40
     dac_bwl_relative_cutoff = 0.75  # low-pass filter cuttoff relative to bandwidth of the RRC pulse
     adc_bwl_relative_cutoff = 0.75
     use_brickwall = False  # use brickwall filter instead of Bessel in the ADC/DAC (Experimental)

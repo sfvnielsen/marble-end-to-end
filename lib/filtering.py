@@ -32,6 +32,8 @@ class AllPassFilter(torch.nn.Module):
     def get_filters(self):
         return None, None
 
+    def get_sample_delay(self):
+        return 0
 
 class FIRfilter(torch.nn.Module):
     def __init__(self, filter_weights: npt.ArrayLike, stride=1, normalize=False, trainable=False, dtype=torch.float64, *args, **kwargs) -> None:
