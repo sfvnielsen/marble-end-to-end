@@ -52,6 +52,13 @@ def calc_theory_ser_pam(constellation_order, EsN0_db):
     return 2 * (constellation_order - 1) / constellation_order * qx
 
 
+def calc_theory_esn0_pam(constellation_order, ser):
+    # Theorertical EsN0 db achieving specified SER in a PAM constellation
+    # Inverse of above function
+    esn0_lin = norm.isf(constellation_order / (2 * (constellation_order - 1)) * ser)
+    return 20 * np.log10(esn0_lin)
+
+
 def decision_logic(xhat, syms, symbol_centers=None):
     # function that interpolates to the constellation
     # assumes xhat and syms are 1D arrays
