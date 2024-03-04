@@ -12,7 +12,12 @@ pip install -r requirements.txt
 ```
 
 Afterwards, install `torch` and `torchaudio` to fit your system specifications (CPU, GPU, Cuda version).
-Please refer to the [pytorch](https://pytorch.org/get-started/locally/) installation page for details on this. 
+Please refer to the [pytorch](https://pytorch.org/get-started/locally/) installation page for details on this.
+
+Finally, to get cubic spline support in torch, we use [Patrick Kidgers implementation](https://github.com/patrick-kidger/torchcubicspline), which can be installed as follows
+``
+pip install git+https://github.com/patrick-kidger/torchcubicspline.git@master
+``
 
 Once installed you should be able to run the main optimization script
 

@@ -12,6 +12,7 @@ from commpy.filters import rrcosfilter
 
 from .filtering import FIRfilter, BesselFilter, BrickWallFilter, AllPassFilter, filter_initialization
 from .utility import find_max_variance_sample
+from .devices import ElectroAbsorptionModulator
 
 # TODO: Implement GPU support
 
@@ -242,7 +243,7 @@ class LearnableTransmissionSystem(object):
         """
         esn0 = (10 ** (self.esn0_db / 10.0))  # linear domain EsN0 ratio
         # Calculate empirical average energy pr. symbol of input signal
-        es = torch.mean(torch.sum(torch.square(torch.reshape(input_signal, (-1, self.sps))), dim=1))
+        es = torch.mean(torch.sum(torch.square(torch.reshape(input_signal - input_signal.mean(), (-1, self.sps))), dim=1))
         # Converting average energy pr. symbol into base power (cf. https://wirelesspi.com/pulse-amplitude-modulation-pam/)
         base_power_pam = es * (3 / (len(self.constellation)**2 - 1))
         n0 =  base_power_pam / esn0  # derive noise variance
@@ -984,3 +985,208 @@ class JointTxRxNonLinearISIChannel(NonLinearISIChannel):
                          tx_filter_init_type=tx_filter_init_type, rx_filter_init_type=rx_filter_init_type,
                          print_interval=print_interval, use_brickwall=use_brickwall, use_1clr=use_1clr,
                          rrc_rolloff=rrc_rolloff)
+
+
+class IntensityModulationChannel(LearnableTransmissionSystem):
+    """
+        Intensity modulation/direct detection (IM/DD) system inspired by
+
+        E. M. Liang and J. M. Kahn, 
+        “Geometric Shaping for Distortion-Limited Intensity Modulation/Direct Detection Data Center Links,”
+        IEEE Photonics Journal, vol. 15, no. 6, pp. 1–17, 2023, doi: 10.1109/JPHOT.2023.3335398.
+
+
+        The system implements an electro absorption modulator (EAM), based on 
+        absorption curves derived from the above reference.
+
+        System has the following structure
+
+        symbols -> upsampling -> pulse shaping -> dac -> eam
+                                                          |
+                                                      photodiode
+                                                          |
+          <-  symbol decision <-  filtering <- adc <- noise (awgn)
+
+    """
+    def __init__(self, sps, noise_std, baud_rate, learning_rate, batch_size, constellation,
+                 eam_insertion_loss_db, eam_voltage_pp, eam_laser_power, eam_voltage_bias,
+                 learn_rx, learn_tx, rx_filter_length, tx_filter_length, square_law_photodiode,
+                 rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75,
+                 rrc_rolloff=0.5,
+                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
+        super().__init__(sps=sps, esn0_db=np.nan, baud_rate=baud_rate, learning_rate=learning_rate,
+                         batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
+                         eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval)
+
+        # Define pulse shaper
+        tx_filter_init = np.zeros((tx_filter_length,))
+        if learn_tx and tx_filter_init_type != 'rrc':
+            tx_filter_init = filter_initialization(tx_filter_init, tx_filter_init_type)
+        else:
+             # Construct RRC filter
+            __, g = rrcosfilter(tx_filter_length, rrc_rolloff, self.sym_length, 1 / self.Ts)
+            g = g[1::]  # delete first element to make filter odd length
+            assert len(g) % 2 == 1  # we assume that pulse is always odd
+            g = g / np.linalg.norm(g)
+            tx_filter_init = g
+
+        self.pulse_shaper = FIRfilter(filter_weights=tx_filter_init, trainable=learn_tx)
+
+        # Define rx filter - downsample to 1 sps as part of convolution (stride)
+        rx_filter_init = np.zeros((rx_filter_length,))
+        if learn_rx and rx_filter_init_type != 'rrc':
+            rx_filter_init = filter_initialization(rx_filter_init, rx_filter_init_type)
+        else:
+             # Construct RRC filter
+            __, g = rrcosfilter(rx_filter_length, rrc_rolloff, self.sym_length, 1 / self.Ts)
+            g = g[1::]  # delete first element to make filter odd length
+            assert len(g) % 2 == 1  # we assume that pulse is always odd
+            g = g / np.linalg.norm(g)
+            rx_filter_init = g
+
+        self.rx_filter = FIRfilter(filter_weights=rx_filter_init, trainable=learn_rx, stride=self.sps)
+
+        # Define bandwidth limitation filters - low pass filter with cutoff relative to bw of RRC
+        rrc_bw = 0.5 / (1 / baud_rate)
+
+        # Digital-to-analog (DAC) converter
+        self.dac = AllPassFilter()
+        if dac_bwl_relative_cutoff is not None:
+            self.dac = BesselFilter(bessel_order=5, cutoff_hz=rrc_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
+
+        # Analog-to-digial (ADC) converter
+        self.adc = AllPassFilter()
+        if adc_bwl_relative_cutoff is not None:
+            self.adc = BesselFilter(bessel_order=5, cutoff_hz=rrc_bw * adc_bwl_relative_cutoff, fs=1/self.Ts)
+
+        # Define EAM
+        self.eam = ElectroAbsorptionModulator(insertion_loss=eam_insertion_loss_db,
+                                              pp_voltage=eam_voltage_pp,
+                                              bias_voltage=eam_voltage_bias,
+                                              laser_power=eam_laser_power)
+        
+        # Define photodiode
+        self.photodiode = lambda x: x  # linear photodiode
+        if square_law_photodiode:
+            self.photodiode = torch.square
+        self.noise_std = noise_std
+        self.Es = None  # initialize energy-per-symbol to None as it will be calculated on the fly during eval
+        
+        # Define number of symbols to discard pr. batch due to boundary effects of convolution
+        self.discard_per_batch = int(((self.pulse_shaper.filter_length + self.rx_filter.filter_length) // 2) / self.sps)
+
+        # Calculate estimate of channel delay (in symbols)
+        self.channel_delay = int(np.ceil((self.adc.get_sample_delay() + self.dac.get_sample_delay()) / sps))
+        print(f"Channel delay is {self.channel_delay} [symbols]")
+
+        # Calculate constellation scale
+        self.constellation_scale = np.sqrt(np.average(np.square(constellation)))
+
+    def get_esn0_db(self):
+        if self.Es is None:
+            print('Warning! Evaluation was not run yet so EsN0 has been calculated yet.')
+            return np.nan
+        
+        return 10.0 * np.log10(self.Es / self.noise_std**2)
+
+    def set_esn0_db(self, new_esn0_db):
+        raise Exception(f"Cannot set EsN0 in this type of channel. Noise is given. Modify v_pp instead.")
+    
+    def set_energy_pr_symbol(self, x):
+        # Calculate empirical symbol power (average over all the symbol periods)
+        es = torch.mean(torch.sum(torch.square(torch.reshape(x - x.mean(), (-1, self.sps))), dim=1))
+        # Converting average energy pr. symbol into base power (cf. https://wirelesspi.com/pulse-amplitude-modulation-pam/)
+        self.Es = es * (3 / (len(self.constellation)**2 - 1))
+        
+    def get_parameters(self):
+        params_to_return = []
+        params_to_return.append({"params": self.pulse_shaper.parameters()})
+        params_to_return.append({"params": self.rx_filter.parameters()})
+        return params_to_return
+
+    def zero_gradients(self):
+        self.pulse_shaper.zero_grad()
+        self.rx_filter.zero_grad()
+
+    def forward(self, symbols_up: torch.TensorType):
+        # Input is assumed to be upsampled sybmols
+        # Apply pulse shaper
+        x = self.pulse_shaper.forward(symbols_up)
+
+        # Apply bandwidth limitation in the DAC
+        x_lp = self.dac.forward(x)
+
+        # Apply EAM
+        x_eam = self.eam.forward(x_lp)
+
+        # Photodiode - square law detection (if configured, else identity)
+        x_pd = self.photodiode(x_eam)
+
+        # Add white noise
+        y = x_pd + self.noise_std * torch.randn(x_pd.shape)
+
+        # Apply bandwidth limitation in the ADC
+        y_lp = self.adc.forward(y)
+
+        # Normalize
+        y_norm = (y_lp - y_lp.mean()) / (y_lp.std())
+
+        # Apply rx filter - applies stride inside filter (outputs sps = 1)
+        rx_filter_out = self.rx_filter.forward(y_norm)
+
+        # Power normalize and rescale to constellation
+        rx_filter_out = rx_filter_out / torch.sqrt(torch.mean(torch.square(rx_filter_out))) * self.constellation_scale
+
+        return rx_filter_out
+
+    def forward_batched(self, symbols_up: torch.TensorType, batch_size: int):
+        # Input is assumed to be upsampled sybmols
+        # Apply pulse shaper
+        x = self.pulse_shaper.forward_batched(symbols_up, batch_size)
+
+        # Apply bandwidth limitation in the DAC
+        x_lp = self.dac.forward_batched(x, batch_size)
+
+        # Apply EAM
+        x_eam = self.eam.forward(x_lp)
+
+        # Photodiode - square law detection (if configured, else identity)
+        x_pd = self.photodiode(x_eam)
+
+        # Add white noise
+        self.set_energy_pr_symbol(x_pd)
+        y = x_pd + self.noise_std * torch.randn(x_pd.shape)
+
+        # Apply bandwidth limitation in the ADC
+        y_lp = self.adc.forward_batched(y, batch_size)
+
+        # Normalize
+        y_norm = (y_lp - y_lp.mean()) / (y_lp.std())
+
+        # Apply rx filter - applies stride inside filter (outputs sps = 1)
+        rx_filter_out = self.rx_filter.forward_batched(y_norm, batch_size)
+
+        # Power normalize and rescale to constellation
+        rx_filter_out = rx_filter_out / torch.sqrt(torch.mean(torch.square(rx_filter_out))) * self.constellation_scale
+
+        return rx_filter_out
+
+    def calculate_loss(self, tx_syms: torch.TensorType, rx_syms: torch.TensorType):
+        # NB! Rx sequence is coarsely aligned to the tx-symbol sequence based on a apriori known channel delay.
+        return torch.mean(torch.square(tx_syms[self.discard_per_batch:-self.discard_per_batch] - torch.roll(rx_syms, -self.channel_delay)[self.discard_per_batch:-self.discard_per_batch]))
+
+    def update_model(self, loss):
+        super().update_model(loss)
+        # Projected gradient - Normalize filters
+        self.pulse_shaper.normalize_filter()
+        self.rx_filter.normalize_filter()
+
+    def get_pulse_shaping_filter(self):
+        return self.pulse_shaper.get_filter()
+
+    def get_rx_filter(self):
+        return self.rx_filter.get_filter()
+
+    def modulator_response(self, symbols_up: torch.TensorType) -> torch.TensorType:
+        raise NotImplementedError
