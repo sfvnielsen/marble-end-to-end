@@ -40,7 +40,7 @@ if __name__ == "__main__":
     rrc_rolloff = 0.5  # for initialization
     learn_tx, tx_filter_length = True, 20
     learn_rx, rx_filter_length = True, 20
-    dac_bwl_relative_cutoff = 0.75  # low-pass filter cuttoff relative to bandwidth of the RRC pulse
+    dac_bwl_relative_cutoff = 0.75  # low-pass filter cuttoff relative to bandwidth of the baseband signal
     adc_bwl_relative_cutoff = 0.75
     use_brickwall = False  # use brickwall filter instead of Bessel in the ADC/DAC (Experimental)
     use_1clr = True  # learning rate scheduling of the optimizer
@@ -103,7 +103,8 @@ if __name__ == "__main__":
     print(f"SER: {ser} (delay: {delay})")
 
     # Compare to standard non-optimized matched filtering
-    awgn_mf_system = MatchedFilterAWGNwithBWL(sps=samples_per_symbol, snr_db=eval_snr_db, baud_rate=baud_rate,
+    rrc_pulse_length_in_syms = 16
+    awgn_mf_system = MatchedFilterAWGNwithBWL(sps=samples_per_symbol, esn0_db=eval_snr_db, baud_rate=baud_rate,
                                               constellation=modulation_scheme.constellation,
                                               rrc_length_in_symbols=rrc_pulse_length_in_syms, rrc_rolloff=rrc_rolloff,
                                               adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,

@@ -20,8 +20,8 @@ class StandardTransmissionSystem(object):
         Parent class for vanilla transmission system without any learnable parameters (evaluation only)
         Numpy based
     """
-    def __init__(self, sps, snr_db, baud_rate, constellation, normalize_after_tx=True) -> None:
-        self.snr_db = snr_db
+    def __init__(self, sps, esn0_db, baud_rate, constellation, normalize_after_tx=True) -> None:
+        self.esn0_db = esn0_db
         self.baud_rate = baud_rate
         self.sps = sps  # samples pr symbol
         self.sym_length = 1 / self.baud_rate  # length of one symbol in seconds
@@ -29,8 +29,8 @@ class StandardTransmissionSystem(object):
         self.constellation = constellation
         self.normalize_after_tx = normalize_after_tx
 
-    def set_snr(self, new_snr_db):
-        self.snr_db = new_snr_db
+    def set_esn0(self, new_esn0_db):
+        self.esn0_db = new_esn0_db
 
     def optimize(self, symbols):
         print('This is an evaluation class. Skipping optimization step.')
@@ -39,10 +39,23 @@ class StandardTransmissionSystem(object):
         pass
 
     def get_esn0_db(self):
-        raise NotImplementedError
+        return self.esn0_db
 
     def evaluate(self, symbols: npt.ArrayLike):
         raise NotImplementedError
+
+    def calculate_noise_std(self, input_signal):
+        """
+            Calculate the standard deviation of AWGN with desired EsN0 based on an input signal
+        """
+        esn0 = (10 ** (self.esn0_db / 10.0))  # linear domain EsN0 ratio
+        # Calculate empirical average energy pr. symbol of input signal
+        n_syms = len(input_signal) // self.sps
+        es = np.mean(np.sum(np.square(np.reshape(input_signal[0:n_syms * self.sps], (-1, self.sps))), axis=1))
+        # Converting average energy pr. symbol into base power (cf. https://wirelesspi.com/pulse-amplitude-modulation-pam/)
+        base_power_pam = es * (3 / (len(self.constellation)**2 - 1))
+        n0 =  base_power_pam / esn0  # derive noise variance
+        return np.sqrt(n0)
 
 
 class MatchedFilterAWGN(StandardTransmissionSystem):
@@ -51,7 +64,7 @@ class MatchedFilterAWGN(StandardTransmissionSystem):
     """
     def __init__(self, sps, snr_db, baud_rate, constellation, normalize_after_tx=False,
                  rrc_length_in_symbols=16, rrc_rolloff=0.5) -> None:
-        super().__init__(sps=sps, snr_db=snr_db, baud_rate=baud_rate,
+        super().__init__(sps=sps, esn0_db=snr_db, baud_rate=baud_rate,
                          constellation=constellation, normalize_after_tx=normalize_after_tx)
 
         # Construct RRC filter
@@ -65,21 +78,8 @@ class MatchedFilterAWGN(StandardTransmissionSystem):
         self.pulse_energy = np.max(gg)
 
         # Calculate energy pr symbol and noise std for the AWGN channel
-        Es = 1.0 if self.normalize_after_tx else np.average(np.square(self.constellation))
-        self.noise_std = np.sqrt(Es / (2 * 10 ** (self.snr_db / 10)))
         self.normalization_constant = np.sqrt(np.average(np.square(self.constellation)) / self.sps) if self.normalize_after_tx else 1.0
         self.constellation_scale = np.sqrt(np.average(np.square(self.constellation)))
-
-    def get_esn0_db(self):
-        noise_scaling = 1.0
-        if self.normalize_after_tx:  # if we normalize after tx, scale noise accordingly
-            noise_scaling = self.normalization_constant
-        return 10.0 * np.log10(1.0 / (self.noise_std * noise_scaling) ** 2)
-
-    def set_snr(self, new_snr_db):
-        super().set_snr(new_snr_db)
-        Es = 1.0 if self.normalize_after_tx else np.average(np.square(self.constellation))
-        self.noise_std = np.sqrt(Es / (2 * 10 ** (self.snr_db / 10)))
 
     def evaluate(self, symbols: npt.ArrayLike):
         # Up-sample symbols
@@ -90,7 +90,8 @@ class MatchedFilterAWGN(StandardTransmissionSystem):
         x = np.convolve(symbols_up, self.rrc_filter) / self.normalization_constant
 
         # Add white noise
-        y = x + self.noise_std * np.random.randn(*x.shape)
+        noise_std = self.calculate_noise_std(x)
+        y = x + noise_std * np.random.randn(*x.shape)
 
         # Apply rx filter
         rx_filter_out = np.convolve(y, self.rrc_filter[::-1])
@@ -114,9 +115,9 @@ class MatchedFilterAWGNwithBWL(StandardTransmissionSystem):
     """
         Special case of the BasicAWGNwithBWL model with no learning. Rx and Tx set to matched filters.
     """
-    def __init__(self, sps, snr_db, baud_rate, constellation, adc_bwl_relative_cutoff,
+    def __init__(self, sps, esn0_db, baud_rate, constellation, adc_bwl_relative_cutoff,
                  dac_bwl_relative_cutoff, rrc_length_in_symbols=16, rrc_rolloff=0.5, normalize_after_tx=True) -> None:
-        super().__init__(sps, snr_db=snr_db, baud_rate=baud_rate,
+        super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          constellation=constellation, normalize_after_tx=normalize_after_tx)
 
         # Construct RRC filter
@@ -131,40 +132,19 @@ class MatchedFilterAWGNwithBWL(StandardTransmissionSystem):
 
         # Construct DAC and ADC low-pass filter - set to None if no cutof is specified
         # Define bandwidth limitation filters - low pass filter with cutoff relative to bw of RRC
-        rrc_bw = 0.5 / (1 / baud_rate)
+        info_bw = 0.5 * baud_rate
 
         self.adc_bessel_b, self.adc_bessel_a = None, None
         if adc_bwl_relative_cutoff:
-            self.adc_bessel_b, self.adc_bessel_a = bessel(2, rrc_bw * adc_bwl_relative_cutoff, fs=1 / self.Ts, norm='mag')
+            self.adc_bessel_b, self.adc_bessel_a = bessel(5, info_bw * adc_bwl_relative_cutoff, fs=1 / self.Ts, norm='mag')
 
         self.dac_bessel_b, self.dac_bessel_a = None, None
         if dac_bwl_relative_cutoff:
-            self.dac_bessel_b, self.dac_bessel_a = bessel(2, rrc_bw * dac_bwl_relative_cutoff, fs=1 / self.Ts, norm='mag')
-
-            # If DAC bandwidth-limitation is enabled, rescale energy-per-symbol - calculate energy of LP filter in the baud_rate band
-            f, H = freqz(self.dac_bessel_b, self.dac_bessel_a, worN=2048, fs=1/self.Ts, whole=True)
-            Hshifted = fftshift(H)
-            f_all = np.arange(-len(f)//2, len(f)//2) / (len(f) * self.Ts)
-            Htrunc = Hshifted[np.where(np.logical_and(f_all < baud_rate / 2, f_all > - baud_rate / 2))]
-            self.Es = np.mean(np.absolute(Htrunc) ** 2)
+            self.dac_bessel_b, self.dac_bessel_a = bessel(5, info_bw * dac_bwl_relative_cutoff, fs=1 / self.Ts, norm='mag')
 
         # Calculate energy pr symbol and noise std for the AWGN channel
-        self.Es = 1.0 if self.normalize_after_tx else np.average(np.square(self.constellation))
-        self.noise_std = np.sqrt(self.Es / (2 * 10 ** (self.snr_db / 10)))
         self.normalization_constant = np.sqrt(np.average(np.square(self.constellation)) / self.sps) if self.normalize_after_tx else 1.0
         self.constellation_scale = np.sqrt(np.average(np.square(self.constellation)))
-
-    def get_esn0_db(self):
-        # If we normalize, noise is scaled implicitly due to rescaling the output of the rx_filter to the constellation
-        noise_scaling = 1.0
-        if self.normalize_after_tx:
-            noise_scaling = self.normalization_constant
-        return 10.0 * np.log10(self.Es / (self.noise_std * noise_scaling) ** 2)
-
-    def set_snr(self, new_snr_db):
-        super().set_snr(new_snr_db)
-        Es = self.Es if self.normalize_after_tx else np.average(np.square(self.constellation)) * self.Es
-        self.noise_std = np.sqrt(Es / (2 * 10 ** (self.snr_db / 10)))
 
     def optimize(self, symbols: npt.ArrayLike):
         # Do nothing when calling optimize
@@ -183,7 +163,8 @@ class MatchedFilterAWGNwithBWL(StandardTransmissionSystem):
             x = lfilter(self.dac_bessel_b, self.dac_bessel_a, x)
 
         # Add white noise
-        y = x + self.noise_std * np.random.randn(*x.shape)
+        noise_std = self.calculate_noise_std(x)
+        y = x + noise_std * np.random.randn(*x.shape)
 
         # Low-pass filter (simulate ADC) (if specified)
         if self.adc_bessel_a is not None and self.adc_bessel_b is not None:
@@ -545,24 +526,24 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         self.rx_filter = FIRfilter(filter_weights=rx_filter_init, trainable=learn_rx, stride=self.sps)
 
         # Define bandwidth limitation filters - low pass filter with cutoff relative to bandwidth of baseband
-        rrc_bw = 0.5 / (1 / baud_rate)
+        info_bw = 0.5 * baud_rate
 
         # Digital-to-analog (DAC) converter
         self.dac = AllPassFilter()
         if dac_bwl_relative_cutoff is not None:
             if use_brickwall:
-                self.dac = BrickWallFilter(filter_length=512, cutoff_hz=rrc_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
+                self.dac = BrickWallFilter(filter_length=512, cutoff_hz=info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
             else:
-                self.dac = BesselFilter(bessel_order=5, cutoff_hz=rrc_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
+                self.dac = BesselFilter(bessel_order=5, cutoff_hz=info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
 
         # Analog-to-digial (ADC) converter
         self.adc = AllPassFilter()
 
         if adc_bwl_relative_cutoff is not None:
             if use_brickwall:
-                self.adc = BrickWallFilter(filter_length=512, cutoff_hz=rrc_bw * adc_bwl_relative_cutoff, fs=1/self.Ts)
+                self.adc = BrickWallFilter(filter_length=512, cutoff_hz=info_bw * adc_bwl_relative_cutoff, fs=1/self.Ts)
             else:
-                self.adc = BesselFilter(bessel_order=5, cutoff_hz=rrc_bw * adc_bwl_relative_cutoff, fs=1/self.Ts)
+                self.adc = BesselFilter(bessel_order=5, cutoff_hz=info_bw * adc_bwl_relative_cutoff, fs=1/self.Ts)
 
         self.normalization_constant = np.sqrt(np.average(np.square(self.constellation)) / self.sps)
 
@@ -784,24 +765,24 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
         self.rx_filter = FIRfilter(filter_weights=rx_filter_init, trainable=learn_rx, stride=self.sps)
 
         # Define bandwidth limitation filters - low pass filter with cutoff relative to bw of RRC
-        rrc_bw = 0.5 / (1 / baud_rate)
+        info_bw = 0.5 * baud_rate
 
         # Digital-to-analog (DAC) converter
         self.dac = AllPassFilter()
         if dac_bwl_relative_cutoff is not None:
             if use_brickwall:
-                self.dac = BrickWallFilter(filter_length=512, cutoff_hz=rrc_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
+                self.dac = BrickWallFilter(filter_length=512, cutoff_hz=info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
             else:
-                self.dac = BesselFilter(bessel_order=5, cutoff_hz=rrc_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
+                self.dac = BesselFilter(bessel_order=5, cutoff_hz=info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
 
         # Analog-to-digial (ADC) converter
         self.adc = AllPassFilter()
 
         if adc_bwl_relative_cutoff is not None:
             if use_brickwall:
-                self.adc = BrickWallFilter(filter_length=512, cutoff_hz=rrc_bw * adc_bwl_relative_cutoff, fs=1/self.Ts)
+                self.adc = BrickWallFilter(filter_length=512, cutoff_hz=info_bw * adc_bwl_relative_cutoff, fs=1/self.Ts)
             else:
-                self.adc = BesselFilter(bessel_order=5, cutoff_hz=rrc_bw * adc_bwl_relative_cutoff, fs=1/self.Ts)
+                self.adc = BesselFilter(bessel_order=5, cutoff_hz=info_bw * adc_bwl_relative_cutoff, fs=1/self.Ts)
 
         # Add parameters for non-linear channel
         # ISI transfer functions are assumed to be in "symbol"-domain, i.e. how much two neighbouring symbols interfere
@@ -819,9 +800,9 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
 
         # Estimate the sample delay introduced by the ISI filters
         f, gd = group_delay((h1_isi_zeropadded, 1), fs=1/self.Ts)
-        isi1_delay = np.average(gd[np.where(f < rrc_bw)])
+        isi1_delay = np.average(gd[np.where(f < info_bw)])
         f, gd = group_delay((h2_isi_zeropadded, 1), fs=1/self.Ts)
-        isi2_delay = np.average(gd[np.where(f < rrc_bw)])
+        isi2_delay = np.average(gd[np.where(f < info_bw)])
         isi_delay = isi1_delay + isi2_delay
 
         # Calculate normalization constant after Tx filter
