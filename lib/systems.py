@@ -991,12 +991,12 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
     """
         Intensity modulation/direct detection (IM/DD) system inspired by
 
-        E. M. Liang and J. M. Kahn, 
+        E. M. Liang and J. M. Kahn,
         “Geometric Shaping for Distortion-Limited Intensity Modulation/Direct Detection Data Center Links,”
         IEEE Photonics Journal, vol. 15, no. 6, pp. 1–17, 2023, doi: 10.1109/JPHOT.2023.3335398.
 
 
-        The system implements an electro absorption modulator (EAM), based on 
+        The system implements an electro absorption modulator (EAM), based on
         absorption curves derived from the above reference.
 
         System has the following structure
@@ -1065,14 +1065,14 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
                                               pp_voltage=eam_voltage_pp,
                                               bias_voltage=eam_voltage_bias,
                                               laser_power=eam_laser_power)
-        
+
         # Define photodiode
         self.photodiode = lambda x: x  # linear photodiode
         if square_law_photodiode:
             self.photodiode = torch.square
         self.noise_std = noise_std
         self.Es = None  # initialize energy-per-symbol to None as it will be calculated on the fly during eval
-        
+
         # Define number of symbols to discard pr. batch due to boundary effects of convolution
         self.discard_per_batch = int(((self.pulse_shaper.filter_length + self.rx_filter.filter_length) // 2) / self.sps)
 
@@ -1087,18 +1087,18 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         if self.Es is None:
             print('Warning! Evaluation was not run yet so EsN0 has been calculated yet.')
             return np.nan
-        
+
         return 10.0 * np.log10(self.Es / self.noise_std**2)
 
     def set_esn0_db(self, new_esn0_db):
         raise Exception(f"Cannot set EsN0 in this type of channel. Noise is given. Modify v_pp instead.")
-    
+
     def set_energy_pr_symbol(self, x):
         # Calculate empirical symbol power (average over all the symbol periods)
         es = torch.mean(torch.sum(torch.square(torch.reshape(x - x.mean(), (-1, self.sps))), dim=1))
         # Converting average energy pr. symbol into base power (cf. https://wirelesspi.com/pulse-amplitude-modulation-pam/)
         self.Es = es * (3 / (len(self.constellation)**2 - 1))
-        
+
     def get_parameters(self):
         params_to_return = []
         params_to_return.append({"params": self.pulse_shaper.parameters()})
@@ -1188,5 +1188,68 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
     def get_rx_filter(self):
         return self.rx_filter.get_filter()
 
-    def modulator_response(self, symbols_up: torch.TensorType) -> torch.TensorType:
-        raise NotImplementedError
+
+class PulseShapingIM(IntensityModulationChannel):
+    """
+        PulseShaping (learning Tx filter) in the (Liang and Kahn, 2023) IM/DD system
+    """
+    def __init__(self, sps, noise_std, baud_rate, learning_rate, batch_size, constellation,
+                 eam_insertion_loss_db, eam_voltage_pp, eam_laser_power, eam_voltage_bias,
+                 rx_filter_length, tx_filter_length, square_law_photodiode,
+                 rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75,
+                 rrc_rolloff=0.5, use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
+        super().__init__(sps=sps, noise_std=noise_std, baud_rate=baud_rate, learning_rate=learning_rate,
+                         batch_size=batch_size, constellation=constellation,
+                         eam_insertion_loss_db=eam_insertion_loss_db, eam_voltage_pp=eam_voltage_pp,
+                         eam_laser_power=eam_laser_power, eam_voltage_bias=eam_voltage_bias,
+                         learn_rx=False, learn_tx=True, rx_filter_length=rx_filter_length,
+                         tx_filter_length=tx_filter_length, square_law_photodiode=square_law_photodiode,
+                         rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
+                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         rrc_rolloff=rrc_rolloff, use_1clr=use_1clr, eval_batch_size_in_syms=eval_batch_size_in_syms,
+                         print_interval=print_interval)
+
+
+class RxFilteringIM(IntensityModulationChannel):
+    """
+        RxFiltering (learning Rx filter) in the (Liang and Kahn, 2023) IM/DD system
+    """
+    def __init__(self, sps, noise_std, baud_rate, learning_rate, batch_size, constellation,
+                 eam_insertion_loss_db, eam_voltage_pp, eam_laser_power, eam_voltage_bias,
+                 rx_filter_length, tx_filter_length, square_law_photodiode,
+                 rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75,
+                 rrc_rolloff=0.5, use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
+        super().__init__(sps=sps, noise_std=noise_std, baud_rate=baud_rate, learning_rate=learning_rate,
+                         batch_size=batch_size, constellation=constellation,
+                         eam_insertion_loss_db=eam_insertion_loss_db, eam_voltage_pp=eam_voltage_pp,
+                         eam_laser_power=eam_laser_power, eam_voltage_bias=eam_voltage_bias,
+                         learn_rx=True, learn_tx=False, rx_filter_length=rx_filter_length,
+                         tx_filter_length=tx_filter_length, square_law_photodiode=square_law_photodiode,
+                         rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
+                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         rrc_rolloff=rrc_rolloff, use_1clr=use_1clr, eval_batch_size_in_syms=eval_batch_size_in_syms,
+                         print_interval=print_interval)
+
+
+class JointTxRxIM(IntensityModulationChannel):
+    """
+        JointTxRx (learning both Tx andRx filter) in the (Liang and Kahn, 2023) IM/DD system
+    """
+    def __init__(self, sps, noise_std, baud_rate, learning_rate, batch_size, constellation,
+                 eam_insertion_loss_db, eam_voltage_pp, eam_laser_power, eam_voltage_bias,
+                 rx_filter_length, tx_filter_length, square_law_photodiode,
+                 rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75,
+                 rrc_rolloff=0.5, use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
+        super().__init__(sps=sps, noise_std=noise_std, baud_rate=baud_rate, learning_rate=learning_rate,
+                         batch_size=batch_size, constellation=constellation,
+                         eam_insertion_loss_db=eam_insertion_loss_db, eam_voltage_pp=eam_voltage_pp,
+                         eam_laser_power=eam_laser_power, eam_voltage_bias=eam_voltage_bias,
+                         learn_rx=True, learn_tx=True, rx_filter_length=rx_filter_length,
+                         tx_filter_length=tx_filter_length, square_law_photodiode=square_law_photodiode,
+                         rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
+                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         rrc_rolloff=rrc_rolloff, use_1clr=use_1clr, eval_batch_size_in_syms=eval_batch_size_in_syms,
+                         print_interval=print_interval)
