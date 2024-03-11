@@ -1088,7 +1088,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
             print('Warning! Evaluation was not run yet so EsN0 has been calculated yet.')
             return np.nan
 
-        return 10.0 * np.log10(self.Es / self.noise_std**2)
+        return (10.0 * np.log10(self.Es / self.noise_std**2)).item()
 
     def set_esn0_db(self, new_esn0_db):
         raise Exception(f"Cannot set EsN0 in this type of channel. Noise is given. Modify v_pp instead.")
