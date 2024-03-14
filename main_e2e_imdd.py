@@ -32,19 +32,19 @@ if __name__ == "__main__":
     # Define simulation parameters
     save_figures = False
     n_symbols_train = int(15e5)
-    n_symbols_val = int(5e5)  # number of symbols used for SER calculation
+    n_symbols_val = int(1e7)  # number of symbols used for SER calculation
     samples_per_symbol = 4
     baud_rate = int(100e6)
-    noise_std = 0.02  # thermal noise after photodiode
+    noise_std = 0.01  # thermal noise after photodiode
     square_law_photodiode = False  # if False use identity mapping
-    mod_order = 4  # PAM
+    mod_order = 8  # PAM
     rrc_rolloff = 0.5
-    learn_tx, tx_filter_length = True, 40
-    learn_rx, rx_filter_length = True, 40
+    learn_tx, tx_filter_length = True, 30
+    learn_rx, rx_filter_length = True, 30
     dac_bwl_relative_cutoff = 0.75  # low-pass filter cuttoff relative to bandwidth of the RRC pulse
     adc_bwl_relative_cutoff = 0.75
     eam_insertion_loss_db = 0.0
-    eam_voltage_pp = 3.0
+    eam_voltage_pp = 2.0
     eam_voltage_bias = -2.0
     eam_laser_power = 1.0
     use_1clr = True  # learning rate scheduling of the optimizer
@@ -73,7 +73,7 @@ if __name__ == "__main__":
     # Initialize learnable transmission system
     imdd_system = IntensityModulationChannel(eam_insertion_loss_db=eam_insertion_loss_db, eam_laser_power=eam_laser_power, eam_voltage_pp=eam_voltage_pp,
                                              eam_voltage_bias=eam_voltage_bias, sps=samples_per_symbol, noise_std=noise_std, baud_rate=baud_rate,
-                                             square_law_photodiode=square_law_photodiode,
+                                             square_law_photodiode=square_law_photodiode, eam_linear_absorption=False,
                                              learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                              learn_tx=learn_tx, learn_rx=learn_rx, rrc_rolloff=rrc_rolloff,
                                              tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
@@ -181,7 +181,7 @@ if __name__ == "__main__":
     alpha_db = imdd_system.eam.spline_object.evaluate(v)
     fig, ax = plt.subplots(figsize=FIGSIZE)
     ax.plot(v, alpha_db)
-    ax.plot(imdd_system.eam.ABSORPTION_KNEE_POINTS_X, imdd_system.eam.ABSORPTION_KNEE_POINTS_Y, 'ro')
+    ax.plot(imdd_system.eam.x_knee_points, imdd_system.eam.y_knee_points, 'ro')
     ax.axvline(imdd_system.eam.voltage_min, color='k', linestyle='--')
     ax.axvline((imdd_system.eam.voltage_min - imdd_system.eam.pp_voltage), color='k', linestyle='--')
     ax.set_xlabel('Voltage')

@@ -34,33 +34,43 @@ class ElectroAbsorptionModulator(object):
     ABSORPTION_KNEE_POINTS_X = torch.flip(torch.Tensor([0.0, -0.5,  -1.0, -2.0, -3.0, -3.5,  -3.8]), (0,))  # driving voltage
     ABSORPTION_KNEE_POINTS_Y = torch.flip(torch.Tensor([0.0, 1.25,   2.5,  5.0,  9.5, 13.0,  12.5]), (0,))  # absorption in dB
 
+    # Linear Voltage-to-absorption curve - used for debugging
+    LINEAR_ABSORPTION_KNEE_POINTS_X = torch.flip(torch.Tensor([0.0, -0.5,  -1.0, -2.0, -3.0, -4.0]), (0,))  # driving voltage
+    LINEAR_ABSORPTION_KNEE_POINTS_Y = torch.flip(torch.Tensor([0.0, 1.0,   2.0,  4.0,   6.0,  8.0]), (0,))  # absorption in dB
 
-    def __init__(self, insertion_loss, pp_voltage, bias_voltage, laser_power):
+
+    def __init__(self, insertion_loss, pp_voltage, bias_voltage, laser_power, dac_min_max, linear_absorption=False):
         # Parse input arguments
         self.insertion_loss = insertion_loss
         self.pp_voltage = pp_voltage
         self.bias_voltage = bias_voltage
         self.laser_power = laser_power
 
+        self.x_knee_points = self.ABSORPTION_KNEE_POINTS_X if not linear_absorption else self.LINEAR_ABSORPTION_KNEE_POINTS_X
+        self.y_knee_points = self.ABSORPTION_KNEE_POINTS_Y if not linear_absorption else self.LINEAR_ABSORPTION_KNEE_POINTS_Y
+
         # TODO: Modulator chirp
 
         # Caculate the cubic spline coefficients based on the given knee-points
-        spline_coefficients = natural_cubic_spline_coeffs(self.ABSORPTION_KNEE_POINTS_X,
-                                                          self.ABSORPTION_KNEE_POINTS_Y[:, None])
+        spline_coefficients = natural_cubic_spline_coeffs(self.x_knee_points, self.y_knee_points[:, None])
         self.spline_object = NaturalCubicSpline(spline_coefficients)
 
         # Calculate voltage corresponding to given insertion loss
-        cubicspline = CubicSpline(self.ABSORPTION_KNEE_POINTS_X.numpy(), self.ABSORPTION_KNEE_POINTS_Y.numpy())
+        cubicspline = CubicSpline(self.x_knee_points.numpy(), self.y_knee_points.numpy())
         self.voltage_insertion_loss = newton(lambda x: cubicspline(x) - self.insertion_loss, x0=-1.0)
         self.voltage_min = self.bias_voltage + self.pp_voltage / 2 + self.voltage_insertion_loss
 
+        # Input to forward is assumed to be a digital signal - convert to voltages using dac_min_max
+        # (typically based on constellation values)
+        self.x_min, self.x_max = dac_min_max
+
     def forward(self, x):
         # Convert x to voltage (based on insertion loss and pp_voltage)
-        z = (x - torch.min(x)) / (torch.max(x) - torch.min(x))  # normalize to [0, 1]
+        z = (x - self.x_min) / (self.x_max - self.x_min)  # normalize
         v = self.pp_voltage * z + self.bias_voltage + self.voltage_insertion_loss
 
         # Calculate absorption from voltage
         alpha_db = self.spline_object.evaluate(v).squeeze()
 
         # Return transmitted field amplitude
-        return torch.sqrt(self.laser_power * torch.float_power(10.0, -alpha_db / 10.0))
+        return torch.sqrt(self.laser_power * torch.pow(10.0, -alpha_db / 10.0))

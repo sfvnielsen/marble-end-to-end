@@ -1011,9 +1011,8 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
     def __init__(self, sps, noise_std, baud_rate, learning_rate, batch_size, constellation,
                  eam_insertion_loss_db, eam_voltage_pp, eam_laser_power, eam_voltage_bias,
                  learn_rx, learn_tx, rx_filter_length, tx_filter_length, square_law_photodiode,
-                 rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75,
-                 rrc_rolloff=0.5,
+                 eam_linear_absorption=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5, 
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
         super().__init__(sps=sps, esn0_db=np.nan, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
@@ -1061,10 +1060,13 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
             self.adc = BesselFilter(bessel_order=5, cutoff_hz=rrc_bw * adc_bwl_relative_cutoff, fs=1/self.Ts)
 
         # Define EAM
+        xmax = np.sqrt(np.max(self.constellation)**2 / self.sps)  # assumes that constellation is symmetric around zero
         self.eam = ElectroAbsorptionModulator(insertion_loss=eam_insertion_loss_db,
-                                              pp_voltage=eam_voltage_pp,
-                                              bias_voltage=eam_voltage_bias,
-                                              laser_power=eam_laser_power)
+                                            pp_voltage=eam_voltage_pp,
+                                            bias_voltage=eam_voltage_bias,
+                                            laser_power=eam_laser_power,
+                                            dac_min_max=(-xmax, xmax),  # conversion from digital signal to voltage
+                                            linear_absorption=eam_linear_absorption)
 
         # Define photodiode
         self.photodiode = lambda x: x  # linear photodiode
@@ -1196,6 +1198,7 @@ class PulseShapingIM(IntensityModulationChannel):
     def __init__(self, sps, noise_std, baud_rate, learning_rate, batch_size, constellation,
                  eam_insertion_loss_db, eam_voltage_pp, eam_laser_power, eam_voltage_bias,
                  rx_filter_length, tx_filter_length, square_law_photodiode,
+                 eam_linear_absorption=False,
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75,
                  rrc_rolloff=0.5, use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
@@ -1203,6 +1206,7 @@ class PulseShapingIM(IntensityModulationChannel):
                          batch_size=batch_size, constellation=constellation,
                          eam_insertion_loss_db=eam_insertion_loss_db, eam_voltage_pp=eam_voltage_pp,
                          eam_laser_power=eam_laser_power, eam_voltage_bias=eam_voltage_bias,
+                         eam_linear_absorption=eam_linear_absorption,
                          learn_rx=False, learn_tx=True, rx_filter_length=rx_filter_length,
                          tx_filter_length=tx_filter_length, square_law_photodiode=square_law_photodiode,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
@@ -1218,6 +1222,7 @@ class RxFilteringIM(IntensityModulationChannel):
     def __init__(self, sps, noise_std, baud_rate, learning_rate, batch_size, constellation,
                  eam_insertion_loss_db, eam_voltage_pp, eam_laser_power, eam_voltage_bias,
                  rx_filter_length, tx_filter_length, square_law_photodiode,
+                 eam_linear_absorption=False, 
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75,
                  rrc_rolloff=0.5, use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
@@ -1225,6 +1230,7 @@ class RxFilteringIM(IntensityModulationChannel):
                          batch_size=batch_size, constellation=constellation,
                          eam_insertion_loss_db=eam_insertion_loss_db, eam_voltage_pp=eam_voltage_pp,
                          eam_laser_power=eam_laser_power, eam_voltage_bias=eam_voltage_bias,
+                         eam_linear_absorption=eam_linear_absorption,
                          learn_rx=True, learn_tx=False, rx_filter_length=rx_filter_length,
                          tx_filter_length=tx_filter_length, square_law_photodiode=square_law_photodiode,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
@@ -1240,6 +1246,7 @@ class JointTxRxIM(IntensityModulationChannel):
     def __init__(self, sps, noise_std, baud_rate, learning_rate, batch_size, constellation,
                  eam_insertion_loss_db, eam_voltage_pp, eam_laser_power, eam_voltage_bias,
                  rx_filter_length, tx_filter_length, square_law_photodiode,
+                 eam_linear_absorption=False,
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75,
                  rrc_rolloff=0.5, use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
@@ -1247,6 +1254,7 @@ class JointTxRxIM(IntensityModulationChannel):
                          batch_size=batch_size, constellation=constellation,
                          eam_insertion_loss_db=eam_insertion_loss_db, eam_voltage_pp=eam_voltage_pp,
                          eam_laser_power=eam_laser_power, eam_voltage_bias=eam_voltage_bias,
+                         eam_linear_absorption=eam_linear_absorption,
                          learn_rx=True, learn_tx=True, rx_filter_length=rx_filter_length,
                          tx_filter_length=tx_filter_length, square_law_photodiode=square_law_photodiode,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
