@@ -1186,20 +1186,20 @@ class PulseShapingIM(IntensityModulationChannel):
     """
         PulseShaping (learning Tx filter) in the (Liang and Kahn, 2023) IM/DD system
     """
-    def __init__(self, sps, noise_std, baud_rate, learning_rate, batch_size, constellation,
+    def __init__(self, sps, thermal_noise_std, baud_rate, learning_rate, batch_size, constellation,
                  eam_insertion_loss_db, eam_voltage_pp, eam_laser_power, eam_voltage_bias,
-                 rx_filter_length, tx_filter_length, square_law_photodiode,
+                 rx_filter_length, tx_filter_length, shot_noise_figure,
                  eam_linear_absorption=False,
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75,
                  rrc_rolloff=0.5, use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
-        super().__init__(sps=sps, thermal_noise_std=noise_std, baud_rate=baud_rate, learning_rate=learning_rate,
+        super().__init__(sps=sps, thermal_noise_std=thermal_noise_std, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
                          eam_insertion_loss_db=eam_insertion_loss_db, eam_voltage_pp=eam_voltage_pp,
                          eam_laser_power=eam_laser_power, eam_voltage_bias=eam_voltage_bias,
-                         eam_linear_absorption=eam_linear_absorption,
+                         eam_linear_absorption=eam_linear_absorption, shot_noise_figure=shot_noise_figure,
                          learn_rx=False, learn_tx=True, rx_filter_length=rx_filter_length,
-                         tx_filter_length=tx_filter_length, square_law_photodiode=square_law_photodiode,
+                         tx_filter_length=tx_filter_length,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          rrc_rolloff=rrc_rolloff, use_1clr=use_1clr, eval_batch_size_in_syms=eval_batch_size_in_syms,
@@ -1210,20 +1210,20 @@ class RxFilteringIM(IntensityModulationChannel):
     """
         RxFiltering (learning Rx filter) in the (Liang and Kahn, 2023) IM/DD system
     """
-    def __init__(self, sps, noise_std, baud_rate, learning_rate, batch_size, constellation,
+    def __init__(self, sps, thermal_noise_std, baud_rate, learning_rate, batch_size, constellation,
                  eam_insertion_loss_db, eam_voltage_pp, eam_laser_power, eam_voltage_bias,
-                 rx_filter_length, tx_filter_length, square_law_photodiode,
+                 rx_filter_length, tx_filter_length, shot_noise_figure,
                  eam_linear_absorption=False, 
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75,
                  rrc_rolloff=0.5, use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
-        super().__init__(sps=sps, thermal_noise_std=noise_std, baud_rate=baud_rate, learning_rate=learning_rate,
+        super().__init__(sps=sps, thermal_noise_std=thermal_noise_std, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
                          eam_insertion_loss_db=eam_insertion_loss_db, eam_voltage_pp=eam_voltage_pp,
                          eam_laser_power=eam_laser_power, eam_voltage_bias=eam_voltage_bias,
                          eam_linear_absorption=eam_linear_absorption,
                          learn_rx=True, learn_tx=False, rx_filter_length=rx_filter_length,
-                         tx_filter_length=tx_filter_length, square_law_photodiode=square_law_photodiode,
+                         tx_filter_length=tx_filter_length, shot_noise_figure=shot_noise_figure,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          rrc_rolloff=rrc_rolloff, use_1clr=use_1clr, eval_batch_size_in_syms=eval_batch_size_in_syms,
@@ -1234,20 +1234,20 @@ class JointTxRxIM(IntensityModulationChannel):
     """
         JointTxRx (learning both Tx andRx filter) in the (Liang and Kahn, 2023) IM/DD system
     """
-    def __init__(self, sps, noise_std, baud_rate, learning_rate, batch_size, constellation,
+    def __init__(self, sps, thermal_noise_std, baud_rate, learning_rate, batch_size, constellation,
                  eam_insertion_loss_db, eam_voltage_pp, eam_laser_power, eam_voltage_bias,
-                 rx_filter_length, tx_filter_length, square_law_photodiode,
+                 rx_filter_length, tx_filter_length, shot_noise_figure,
                  eam_linear_absorption=False,
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75,
                  rrc_rolloff=0.5, use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
-        super().__init__(sps=sps, thermal_noise_std=noise_std, baud_rate=baud_rate, learning_rate=learning_rate,
+        super().__init__(sps=sps, thermal_noise_std=thermal_noise_std, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
                          eam_insertion_loss_db=eam_insertion_loss_db, eam_voltage_pp=eam_voltage_pp,
                          eam_laser_power=eam_laser_power, eam_voltage_bias=eam_voltage_bias,
                          eam_linear_absorption=eam_linear_absorption,
                          learn_rx=True, learn_tx=True, rx_filter_length=rx_filter_length,
-                         tx_filter_length=tx_filter_length, square_law_photodiode=square_law_photodiode,
+                         tx_filter_length=tx_filter_length, shot_noise_figure=shot_noise_figure,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          rrc_rolloff=rrc_rolloff, use_1clr=use_1clr, eval_batch_size_in_syms=eval_batch_size_in_syms,
