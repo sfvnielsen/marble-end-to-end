@@ -29,7 +29,7 @@ FIGPREFIX = 'e2e'
 
 if __name__ == "__main__":
     # Define simulation parameters
-    save_figures = False
+    save_figures = True
     n_symbols_train = int(15e5)
     n_symbols_val = int(5e5)  # number of symbols used for SER calculation
     samples_per_symbol = 4
@@ -40,8 +40,8 @@ if __name__ == "__main__":
     rrc_rolloff = 0.5  # for initialization
     learn_tx, tx_filter_length = True, 20
     learn_rx, rx_filter_length = True, 20
-    dac_bwl_relative_cutoff = 0.75  # low-pass filter cuttoff relative to bandwidth of the baseband signal
-    adc_bwl_relative_cutoff = 0.75
+    dac_bwl_relative_cutoff = 0.65  # low-pass filter cuttoff relative to bandwidth of the baseband signal
+    adc_bwl_relative_cutoff = 0.65
     use_brickwall = False  # use brickwall filter instead of Bessel in the ADC/DAC (Experimental)
     use_1clr = True  # learning rate scheduling of the optimizer
 
@@ -114,7 +114,7 @@ if __name__ == "__main__":
     print(f"SER (Matched filter): {ser_mf} (delay: {delay_mf})")
 
     # Plot learned filters vs. matched
-    filter_amp_min_db = -80.0
+    filter_amp_min_db = -40.0
     fig, ax = plt.subplots(nrows=2, ncols=3, figsize=(20, 12.5))
     for sys, label in zip([awgn_system, awgn_mf_system],
                    ['E2E', 'Matched']):
@@ -157,6 +157,8 @@ if __name__ == "__main__":
     for i in range(3):
         __, ymax = ax[1, i].get_ylim()
         ax[1, i].set_ylim(filter_amp_min_db, ymax)
+        ax[0, i].grid()
+        ax[1, i].grid()
 
     plt.tight_layout()
     if save_figures:

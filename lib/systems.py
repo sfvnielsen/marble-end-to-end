@@ -63,9 +63,9 @@ class MatchedFilterAWGN(StandardTransmissionSystem):
     """
         Special case of the BasicAWGN model with no learning. Rx and Tx set to matched filters.
     """
-    def __init__(self, sps, snr_db, baud_rate, constellation, normalize_after_tx=False,
+    def __init__(self, sps, esn0_db, baud_rate, constellation, normalize_after_tx=False,
                  rrc_length_in_symbols=16, rrc_rolloff=0.5) -> None:
-        super().__init__(sps=sps, esn0_db=snr_db, baud_rate=baud_rate,
+        super().__init__(sps=sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          constellation=constellation, normalize_after_tx=normalize_after_tx)
 
         # Construct RRC filter
@@ -99,6 +99,64 @@ class MatchedFilterAWGN(StandardTransmissionSystem):
 
         # Sample selection
         rx_filter_out = rx_filter_out[self.sync_point:-self.sync_point:self.sps]
+
+        # Rescale to constellation
+        rx_filter_out = rx_filter_out / np.sqrt(np.mean(np.square(rx_filter_out))) * self.constellation_scale
+
+        return rx_filter_out
+
+    def get_pulse_shaping_filter(self):
+        return np.copy(self.rrc_filter)
+
+    def get_rx_filter(self):
+        return np.copy(self.rrc_filter[::-1])
+
+
+class MatchedFilterAWGNwithDelay(StandardTransmissionSystem):
+    """
+        Special case of the BasicAWGN model with no learning. Rx and Tx set to matched filters.
+    """
+    def __init__(self, sps, esn0_db, baud_rate, constellation, normalize_after_tx=False,
+                 sample_delay=1,
+                 rrc_length_in_symbols=16, rrc_rolloff=0.5) -> None:
+        super().__init__(sps=sps, esn0_db=esn0_db, baud_rate=baud_rate,
+                         constellation=constellation, normalize_after_tx=normalize_after_tx)
+
+        # Construct RRC filter
+        __, g = rrcosfilter(rrc_length_in_symbols * self.sps, rrc_rolloff, self.sym_length, 1 / self.Ts)
+        g = g[1::]  # delete first element to make filter odd length
+        assert len(g) % 2 == 1  # we assume that pulse is always odd
+        g = g / np.linalg.norm(g)
+        self.rrc_filter = g
+        gg = np.convolve(self.rrc_filter, self.rrc_filter[::-1])
+        self.sync_point = np.argmax(gg)
+        self.pulse_energy = np.max(gg)
+
+        self.sample_delay = sample_delay
+
+        # Calculate energy pr symbol and noise std for the AWGN channel
+        self.normalization_constant = np.sqrt(np.average(np.square(self.constellation)) / self.sps) if self.normalize_after_tx else 1.0
+        self.constellation_scale = np.sqrt(np.average(np.square(self.constellation)))
+
+    def evaluate(self, symbols: npt.ArrayLike):
+        # Up-sample symbols
+        symbols_up = np.zeros(self.sps * len(symbols), dtype=symbols.dtype)
+        symbols_up[0::self.sps] = symbols
+
+        # Apply pulse shaper
+        x = np.convolve(symbols_up, self.rrc_filter) / self.normalization_constant
+
+        # Add white noise
+        noise_std = self.calculate_noise_std(x)
+        y = x + noise_std * np.random.randn(*x.shape)
+        y = np.roll(y, self.sample_delay)
+
+        # Apply rx filter
+        rx_filter_out = np.convolve(y, self.rrc_filter[::-1])
+
+        # Sample selection
+        max_var_samp = find_max_variance_sample(rx_filter_out[self.sync_point:-self.sync_point], sps=self.sps)
+        rx_filter_out = rx_filter_out[(self.sync_point + max_var_samp):(self.sync_point + max_var_samp + len(symbols) * self.sps):self.sps]
 
         # Rescale to constellation
         rx_filter_out = rx_filter_out / np.sqrt(np.mean(np.square(rx_filter_out))) * self.constellation_scale
@@ -435,6 +493,133 @@ class BasicAWGN(LearnableTransmissionSystem):
     def get_rx_filter(self):
         return self.rx_filter.get_filter()
 
+
+class BasicAWGNwithDelay(LearnableTransmissionSystem):
+    """
+        Basic additive white Gaussian noise system with pulse-shaping by RRC - add sample delay in at noise addition
+    """
+    def __init__(self, sps, esn0_db, baud_rate, learning_rate, batch_size, constellation, learn_tx: bool, learn_rx: bool, print_interval=int(5e4),
+                 normalize_after_tx=True, tx_filter_length=45, rx_filter_length=45, sample_delay=1,
+                 tx_filter_init_type='dirac', rx_filter_init_type='dirac', rrc_rolloff=0.5, use_1clr=False) -> None:
+        super().__init__(sps=sps,
+                         esn0_db=esn0_db,
+                         baud_rate=baud_rate,
+                         learning_rate=learning_rate,
+                         batch_size=batch_size,
+                         constellation=constellation,
+                         print_interval=print_interval,
+                         use_1clr=use_1clr)
+
+        # Define pulse shaper
+        tx_filter_init = np.zeros((tx_filter_length,))
+        if learn_tx and tx_filter_init_type != 'rrc':
+            tx_filter_init = filter_initialization(tx_filter_init, tx_filter_init_type)
+        else:
+             # Construct RRC filter
+            __, g = rrcosfilter(tx_filter_length, rrc_rolloff, self.sym_length, 1 / self.Ts)
+            g = g[1::]  # delete first element to make filter odd length
+            assert len(g) % 2 == 1  # we assume that pulse is always odd
+            g = g / np.linalg.norm(g)
+            tx_filter_init = g
+
+        self.pulse_shaper = FIRfilter(filter_weights=tx_filter_init, trainable=learn_tx)
+
+        # Define rx filter - downsample to 1 sps as part of convolution (stride)
+        rx_filter_init = np.zeros((rx_filter_length,))
+        if learn_rx and rx_filter_init_type != 'rrc':
+            rx_filter_init = filter_initialization(rx_filter_init, rx_filter_init_type)
+        else:
+             # Construct RRC filter
+            __, g = rrcosfilter(rx_filter_length, rrc_rolloff, self.sym_length, 1 / self.Ts)
+            g = g[1::]  # delete first element to make filter odd length
+            assert len(g) % 2 == 1  # we assume that pulse is always odd
+            g = g / np.linalg.norm(g)
+            rx_filter_init = g
+
+        self.rx_filter = FIRfilter(filter_weights=rx_filter_init, trainable=learn_rx, stride=self.sps)
+
+        # Set the post-tx-normalization-property of the class
+        self.normalize_after_tx = normalize_after_tx
+        self.normalization_constant = np.sqrt(np.average(np.square(self.constellation)) / self.sps) if self.normalize_after_tx else 1.0
+
+        # Calculate constellation scale
+        self.constellation_scale = np.sqrt(np.average(np.square(constellation)))
+
+        # Define number of symbols to discard pr. batch due to boundary effects of convolution
+        self.discard_per_batch = int((self.pulse_shaper.filter_length + self.rx_filter.filter_length) / self.sps)
+
+        self.sample_delay = sample_delay
+
+    def get_parameters(self):
+        params_to_return = []
+        params_to_return.append({"params": self.pulse_shaper.parameters()})
+        params_to_return.append({"params": self.rx_filter.parameters()})
+        return params_to_return
+
+    def zero_gradients(self):
+        self.pulse_shaper.zero_grad()
+        self.rx_filter.zero_grad()
+
+    def forward(self, symbols_up: torch.TensorType):
+        # Input is assumed to be upsampled sybmols
+        # Apply pulse shaper
+        x = self.pulse_shaper.forward(symbols_up)
+
+        # Normalize (if self.normalization_after_tx is set, else norm_constant = 1.0)
+        x = x / self.normalization_constant
+
+        # Add white noise based on desired EsN0
+        with torch.no_grad():
+            noise_std = self.calculate_noise_std(x)
+
+        y = x + noise_std * torch.randn(x.shape)
+        y = torch.roll(y, (self.sample_delay, ))
+
+        # Apply rx filter
+        rx_filter_out = self.rx_filter.forward(y)
+
+        # Rescale to constellation (if self.normalization_after_tx is set)
+        if self.normalize_after_tx:
+            rx_filter_out = rx_filter_out / torch.sqrt(torch.mean(torch.square(rx_filter_out))) * self.constellation_scale
+
+        return rx_filter_out
+
+    def forward_batched(self, symbols_up: torch.TensorType, batch_size: int):
+        # Input is assumed to be upsampled sybmols
+        # Apply pulse shaper
+        x = self.pulse_shaper.forward_batched(symbols_up, batch_size)
+
+        # Normalize (if self.normalization_after_tx is set, else norm_constant = 1.0)
+        x = x / self.normalization_constant
+
+        # Add white noise
+        noise_std = self.calculate_noise_std(x)
+        y = x + noise_std * torch.randn(x.shape)
+        y = torch.roll(y, (self.sample_delay, ))
+
+        # Apply rx filter
+        rx_filter_out = self.rx_filter.forward_batched(y, batch_size)
+
+        # Rescale to constellation (if self.normalization_after_tx is set)
+        if self.normalize_after_tx:
+            rx_filter_out = rx_filter_out / torch.sqrt(torch.mean(torch.square(rx_filter_out))) * self.constellation_scale
+
+        return rx_filter_out
+
+    def calculate_loss(self, tx_syms: torch.TensorType, rx_syms: torch.TensorType):
+        return torch.mean(torch.square(tx_syms[self.discard_per_batch:-self.discard_per_batch] - rx_syms[self.discard_per_batch:-self.discard_per_batch]))
+
+    def update_model(self, loss):
+        super().update_model(loss)
+        # Projected gradient - Normalize filters
+        self.pulse_shaper.normalize_filter()
+        self.rx_filter.normalize_filter()
+
+    def get_pulse_shaping_filter(self):
+        return self.pulse_shaper.get_filter()
+
+    def get_rx_filter(self):
+        return self.rx_filter.get_filter()
 
 class PulseShapingAWGN(BasicAWGN):
     """
