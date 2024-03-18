@@ -1008,7 +1008,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
           <-  symbol decision <-  filtering <- adc <- photodiode
 
     """
-    def __init__(self, sps, thermal_noise_std, baud_rate, learning_rate, batch_size, constellation,
+    def __init__(self, sps, noise_std, baud_rate, learning_rate, batch_size, constellation,
                  eam_insertion_loss_db, eam_voltage_pp, eam_laser_power, eam_voltage_bias,
                  learn_rx, learn_tx, rx_filter_length, tx_filter_length, shot_noise_figure,
                  eam_linear_absorption=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
@@ -1069,9 +1069,9 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
                                             linear_absorption=eam_linear_absorption)
 
         # Define photodiode
-        self.photodiode = Photodiode(thermal_noise_std=thermal_noise_std, shot_noise_figure=shot_noise_figure,
+        self.photodiode = Photodiode(thermal_noise_std=noise_std, shot_noise_figure=shot_noise_figure,
                                      sps=self.sps)
-        self.noise_std = thermal_noise_std
+        self.noise_std = noise_std
         self.Es = None  # initialize energy-per-symbol to None as it will be calculated on the fly during eval
 
         # Define number of symbols to discard pr. batch due to boundary effects of convolution
@@ -1186,14 +1186,14 @@ class PulseShapingIM(IntensityModulationChannel):
     """
         PulseShaping (learning Tx filter) in the (Liang and Kahn, 2023) IM/DD system
     """
-    def __init__(self, sps, thermal_noise_std, baud_rate, learning_rate, batch_size, constellation,
+    def __init__(self, sps, noise_std, baud_rate, learning_rate, batch_size, constellation,
                  eam_insertion_loss_db, eam_voltage_pp, eam_laser_power, eam_voltage_bias,
                  rx_filter_length, tx_filter_length, shot_noise_figure,
                  eam_linear_absorption=False,
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75,
                  rrc_rolloff=0.5, use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
-        super().__init__(sps=sps, thermal_noise_std=thermal_noise_std, baud_rate=baud_rate, learning_rate=learning_rate,
+        super().__init__(sps=sps, noise_std=noise_std, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
                          eam_insertion_loss_db=eam_insertion_loss_db, eam_voltage_pp=eam_voltage_pp,
                          eam_laser_power=eam_laser_power, eam_voltage_bias=eam_voltage_bias,
@@ -1210,14 +1210,14 @@ class RxFilteringIM(IntensityModulationChannel):
     """
         RxFiltering (learning Rx filter) in the (Liang and Kahn, 2023) IM/DD system
     """
-    def __init__(self, sps, thermal_noise_std, baud_rate, learning_rate, batch_size, constellation,
+    def __init__(self, sps, noise_std, baud_rate, learning_rate, batch_size, constellation,
                  eam_insertion_loss_db, eam_voltage_pp, eam_laser_power, eam_voltage_bias,
                  rx_filter_length, tx_filter_length, shot_noise_figure,
                  eam_linear_absorption=False, 
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75,
                  rrc_rolloff=0.5, use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
-        super().__init__(sps=sps, thermal_noise_std=thermal_noise_std, baud_rate=baud_rate, learning_rate=learning_rate,
+        super().__init__(sps=sps, noise_std=noise_std, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
                          eam_insertion_loss_db=eam_insertion_loss_db, eam_voltage_pp=eam_voltage_pp,
                          eam_laser_power=eam_laser_power, eam_voltage_bias=eam_voltage_bias,
@@ -1234,14 +1234,14 @@ class JointTxRxIM(IntensityModulationChannel):
     """
         JointTxRx (learning both Tx andRx filter) in the (Liang and Kahn, 2023) IM/DD system
     """
-    def __init__(self, sps, thermal_noise_std, baud_rate, learning_rate, batch_size, constellation,
+    def __init__(self, sps, noise_std, baud_rate, learning_rate, batch_size, constellation,
                  eam_insertion_loss_db, eam_voltage_pp, eam_laser_power, eam_voltage_bias,
                  rx_filter_length, tx_filter_length, shot_noise_figure,
                  eam_linear_absorption=False,
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75,
                  rrc_rolloff=0.5, use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
-        super().__init__(sps=sps, thermal_noise_std=thermal_noise_std, baud_rate=baud_rate, learning_rate=learning_rate,
+        super().__init__(sps=sps, noise_std=noise_std, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
                          eam_insertion_loss_db=eam_insertion_loss_db, eam_voltage_pp=eam_voltage_pp,
                          eam_laser_power=eam_laser_power, eam_voltage_bias=eam_voltage_bias,

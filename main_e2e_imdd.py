@@ -72,7 +72,7 @@ if __name__ == "__main__":
 
     # Initialize learnable transmission system
     imdd_system = IntensityModulationChannel(eam_insertion_loss_db=eam_insertion_loss_db, eam_laser_power=eam_laser_power, eam_voltage_pp=eam_voltage_pp,
-                                             eam_voltage_bias=eam_voltage_bias, sps=samples_per_symbol, thermal_noise_std=thermal_noise_std, baud_rate=baud_rate,
+                                             eam_voltage_bias=eam_voltage_bias, sps=samples_per_symbol, noise_std=thermal_noise_std, baud_rate=baud_rate,
                                              shot_noise_figure=shot_noise_figure, eam_linear_absorption=False,
                                              learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                              learn_tx=learn_tx, learn_rx=learn_rx, rrc_rolloff=rrc_rolloff,
