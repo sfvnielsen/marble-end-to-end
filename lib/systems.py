@@ -12,7 +12,7 @@ from commpy.filters import rrcosfilter
 
 from .filtering import FIRfilter, BesselFilter, BrickWallFilter, AllPassFilter, filter_initialization
 from .utility import find_max_variance_sample
-from .devices import ElectroAbsorptionModulator
+from .devices import ElectroAbsorptionModulator, Photodiode
 
 # TODO: Implement GPU support
 
@@ -1003,14 +1003,14 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
 
         symbols -> upsampling -> pulse shaping -> dac -> eam
                                                           |
-                                                      photodiode
                                                           |
-          <-  symbol decision <-  filtering <- adc <- noise (awgn)
+                                                          |
+          <-  symbol decision <-  filtering <- adc <- photodiode
 
     """
-    def __init__(self, sps, noise_std, baud_rate, learning_rate, batch_size, constellation,
+    def __init__(self, sps, thermal_noise_std, baud_rate, learning_rate, batch_size, constellation,
                  eam_insertion_loss_db, eam_voltage_pp, eam_laser_power, eam_voltage_bias,
-                 learn_rx, learn_tx, rx_filter_length, tx_filter_length, square_law_photodiode,
+                 learn_rx, learn_tx, rx_filter_length, tx_filter_length, shot_noise_figure,
                  eam_linear_absorption=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5, 
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
@@ -1069,10 +1069,9 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
                                             linear_absorption=eam_linear_absorption)
 
         # Define photodiode
-        self.photodiode = lambda x: x  # linear photodiode
-        if square_law_photodiode:
-            self.photodiode = torch.square
-        self.noise_std = noise_std
+        self.photodiode = Photodiode(thermal_noise_std=thermal_noise_std, shot_noise_figure=shot_noise_figure,
+                                     sps=self.sps)
+        self.noise_std = thermal_noise_std
         self.Es = None  # initialize energy-per-symbol to None as it will be calculated on the fly during eval
 
         # Define number of symbols to discard pr. batch due to boundary effects of convolution
@@ -1095,9 +1094,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
     def set_esn0_db(self, new_esn0_db):
         raise Exception(f"Cannot set EsN0 in this type of channel. Noise is given. Modify v_pp instead.")
 
-    def set_energy_pr_symbol(self, x):
-        # Calculate empirical symbol power (average over all the symbol periods)
-        es = torch.mean(torch.sum(torch.square(torch.reshape(x - x.mean(), (-1, self.sps))), dim=1))
+    def set_energy_pr_symbol(self, es):        
         # Converting average energy pr. symbol into base power (cf. https://wirelesspi.com/pulse-amplitude-modulation-pam/)
         self.Es = es * (3 / (len(self.constellation)**2 - 1))
 
@@ -1122,11 +1119,8 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         # Apply EAM
         x_eam = self.eam.forward(x_lp)
 
-        # Photodiode - square law detection (if configured, else identity)
-        x_pd = self.photodiode(x_eam)
-
-        # Add white noise
-        y = x_pd + self.noise_std * torch.randn(x_pd.shape)
+        # Photodiode - square law detection - adds noise inside (thermal and shot noise)
+        y = self.photodiode.forward(x_eam)
 
         # Apply bandwidth limitation in the ADC
         y_lp = self.adc.forward(y)
@@ -1153,12 +1147,9 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         # Apply EAM
         x_eam = self.eam.forward(x_lp)
 
-        # Photodiode - square law detection (if configured, else identity)
-        x_pd = self.photodiode(x_eam)
-
-        # Add white noise
-        self.set_energy_pr_symbol(x_pd)
-        y = x_pd + self.noise_std * torch.randn(x_pd.shape)
+        # Photodiode - square law detection - adds noise inside (thermal and shot noise)
+        y = self.photodiode.forward(x_eam)
+        self.set_energy_pr_symbol(self.photodiode.Es)
 
         # Apply bandwidth limitation in the ADC
         y_lp = self.adc.forward_batched(y, batch_size)
@@ -1202,7 +1193,7 @@ class PulseShapingIM(IntensityModulationChannel):
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75,
                  rrc_rolloff=0.5, use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
-        super().__init__(sps=sps, noise_std=noise_std, baud_rate=baud_rate, learning_rate=learning_rate,
+        super().__init__(sps=sps, thermal_noise_std=noise_std, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
                          eam_insertion_loss_db=eam_insertion_loss_db, eam_voltage_pp=eam_voltage_pp,
                          eam_laser_power=eam_laser_power, eam_voltage_bias=eam_voltage_bias,
@@ -1226,7 +1217,7 @@ class RxFilteringIM(IntensityModulationChannel):
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75,
                  rrc_rolloff=0.5, use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
-        super().__init__(sps=sps, noise_std=noise_std, baud_rate=baud_rate, learning_rate=learning_rate,
+        super().__init__(sps=sps, thermal_noise_std=noise_std, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
                          eam_insertion_loss_db=eam_insertion_loss_db, eam_voltage_pp=eam_voltage_pp,
                          eam_laser_power=eam_laser_power, eam_voltage_bias=eam_voltage_bias,
@@ -1250,7 +1241,7 @@ class JointTxRxIM(IntensityModulationChannel):
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75,
                  rrc_rolloff=0.5, use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
-        super().__init__(sps=sps, noise_std=noise_std, baud_rate=baud_rate, learning_rate=learning_rate,
+        super().__init__(sps=sps, thermal_noise_std=noise_std, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
                          eam_insertion_loss_db=eam_insertion_loss_db, eam_voltage_pp=eam_voltage_pp,
                          eam_laser_power=eam_laser_power, eam_voltage_bias=eam_voltage_bias,

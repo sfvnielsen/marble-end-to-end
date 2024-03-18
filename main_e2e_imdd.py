@@ -35,17 +35,17 @@ if __name__ == "__main__":
     n_symbols_val = int(1e7)  # number of symbols used for SER calculation
     samples_per_symbol = 4
     baud_rate = int(100e6)
-    noise_std = 0.01  # thermal noise after photodiode
-    square_law_photodiode = False  # if False use identity mapping
-    mod_order = 8  # PAM
+    thermal_noise_std = 0.12  # thermal noise after photodiode
+    shot_noise_figure = 0.01  # shot noise (proportional to signal strength)
+    mod_order = 4  # PAM
     rrc_rolloff = 0.5
-    learn_tx, tx_filter_length = True, 30
+    learn_tx, tx_filter_length = False, 30
     learn_rx, rx_filter_length = True, 30
-    dac_bwl_relative_cutoff = 0.75  # low-pass filter cuttoff relative to bandwidth of the RRC pulse
-    adc_bwl_relative_cutoff = 0.75
+    dac_bwl_relative_cutoff = 0.8  # low-pass filter cuttoff relative to bandwidth of the RRC pulse
+    adc_bwl_relative_cutoff = 0.8
     eam_insertion_loss_db = 0.0
-    eam_voltage_pp = 2.0
-    eam_voltage_bias = -2.0
+    eam_voltage_pp = 2.5
+    eam_voltage_bias = -1.5
     eam_laser_power = 1.0
     use_1clr = True  # learning rate scheduling of the optimizer
 
@@ -72,8 +72,8 @@ if __name__ == "__main__":
 
     # Initialize learnable transmission system
     imdd_system = IntensityModulationChannel(eam_insertion_loss_db=eam_insertion_loss_db, eam_laser_power=eam_laser_power, eam_voltage_pp=eam_voltage_pp,
-                                             eam_voltage_bias=eam_voltage_bias, sps=samples_per_symbol, noise_std=noise_std, baud_rate=baud_rate,
-                                             square_law_photodiode=square_law_photodiode, eam_linear_absorption=False,
+                                             eam_voltage_bias=eam_voltage_bias, sps=samples_per_symbol, thermal_noise_std=thermal_noise_std, baud_rate=baud_rate,
+                                             shot_noise_figure=shot_noise_figure, eam_linear_absorption=False,
                                              learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                              learn_tx=learn_tx, learn_rx=learn_rx, rrc_rolloff=rrc_rolloff,
                                              tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,

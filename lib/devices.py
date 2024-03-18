@@ -74,3 +74,23 @@ class ElectroAbsorptionModulator(object):
 
         # Return transmitted field amplitude
         return torch.sqrt(self.laser_power * torch.pow(10.0, -alpha_db / 10.0))
+
+
+class Photodiode(object):
+    """
+        Simplest possible photodiode including shot and thermal noise
+
+        FIXME: Implement real physical constants
+    """
+    def __init__(self, thermal_noise_std, shot_noise_figure, sps) -> None:
+        self.thermal_noise_std = thermal_noise_std
+        self.shot_noise_figure = shot_noise_figure
+        self.sps = sps
+        self.Es = None  # energy pr. symbol after detection
+
+    def forward(self, x):
+        thermal_noise = self.thermal_noise_std * torch.randn_like(x)
+        shot_noise = self.shot_noise_figure * torch.mean(torch.square(x)) * torch.randn_like(x)
+        x2 = torch.square(x)
+        self.Es = torch.mean(torch.sum(torch.square(torch.reshape(x2 - x2.mean(), (-1, self.sps))), dim=1))
+        return x2 + thermal_noise + shot_noise
