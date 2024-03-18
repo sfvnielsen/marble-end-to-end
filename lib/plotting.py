@@ -54,3 +54,13 @@ def plot_fft(x: npt.ArrayLike, ax: plt.Axes, Ts: float,
     Hshifted = fftshift(H)
 
     ax.plot(fqs, 20.0 * np.log10(np.absolute(Hshifted) + eps), label=plot_label)
+
+
+def plot_eyediagram(rx_out: npt.ArrayLike, ax: plt.Axes, Ts: float, sps: int, histogram: bool = False, decimation=10):
+    n_symbol_periods = 4
+    t = np.arange(0, n_symbol_periods * Ts * sps, Ts)
+    if histogram:
+        ax.hist2d(np.tile(t, len(rx_out) // len(t)), rx_out, bins=(n_symbol_periods * sps, 50), cmap='inferno')
+    else:
+        ax.plot(t, np.reshape(rx_out, (-1, sps * n_symbol_periods))[::decimation].T, color='crimson', alpha=.1, lw=.5)
+    

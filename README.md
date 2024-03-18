@@ -54,6 +54,12 @@ This system is implemented in the three classes `PulseShapingNonLinearISIChannel
 
 Please refer to the script `main_e2e_nonlin.py` for an example of how the system is optimized.
 
+## Intensity modulation/direct detection channel
+Inspired from [3], we implement an IM/DD system with an electro absorption modulator and a single mode fiber channel model.
+The system is implemented in `PulseShapingIM` (where the Rx filter is fixed), `RxFilteringIM` (where the Tx filter is fixed) and `JointTxRxIM` (where Rx and Tx filter are jointly optimized).
+
+Please refer to the script `main_e2e_imdd.py` for an example of how the system is optimized.
+
 ## Acknowledgements
 The work carried out in this repository is part of a research project [MAchine leaRning enaBLEd fiber optic communication](https://veluxfoundations.dk/en/villum-synergy-2021) (MARBLE) funded by the Villum foundation.
 
@@ -63,3 +69,4 @@ The work carried out in this repository is part of a research project [MAchine l
 
 [2] O. Jovanovic, M. P. Yankov, F. Da Ros, and D. Zibar, “End-to-End Learning of a Constellation Shape Robust to Channel Condition Uncertainties,” Journal of Lightwave Technology, vol. 40, no. 10, pp. 3316–3324, May 2022, doi: 10.1109/JLT.2022.3169993.
 
+[3] E. M. Liang and J. M. Kahn, “Geometric Shaping for Distortion-Limited Intensity Modulation/Direct Detection Data Center Links,” IEEE Photonics Journal, vol. 15, no. 6, pp. 1–17, 2023, doi: 10.1109/JPHOT.2023.3335398.

@@ -51,7 +51,7 @@ def system_forward(symbols_up, tx_filter, rx_filter, noise_std, constellation_sc
 if __name__ == "__main__":
 
     # Simulation parameters
-    symbol_rate = int(10e6)
+    symbol_rate = int(32e9)
     sps = 4  # samples pr. symbol
     esn0_db = 8.0  # symbol energy SNR
     n_symbols_train = int(1e6)

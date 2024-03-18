@@ -105,6 +105,9 @@ class FIRfilter(torch.nn.Module):
         # Calculate L2 norm and divide on the filter
         with torch.no_grad():
             self.conv_weights /= torch.linalg.norm(self.conv_weights)
+    
+    def set_stride(self, new_stride):
+        self.stride = new_stride
 
 
 class BesselFilter(torch.nn.Module):

@@ -33,7 +33,7 @@ if __name__ == "__main__":
     n_symbols_train = int(15e5)
     n_symbols_val = int(5e5)  # number of symbols used for SER calculation
     samples_per_symbol = 4
-    baud_rate = int(100e6)
+    baud_rate = int(100e9)
     train_snr_db = 8.0  # SNR (EsN0) at which the system in trained in
     eval_snr_db = train_snr_db
     mod_order = 4  # PAM
