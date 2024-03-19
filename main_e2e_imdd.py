@@ -12,7 +12,7 @@ from scipy.signal import lfilter
 
 from lib.utility import calc_ser_pam, calc_theory_ser_pam
 from lib.systems import IntensityModulationChannel
-from lib.plotting import plot_bar, plot_fft_filter_response, plot_fft_ab_response
+from lib.plotting import plot_bar, plot_fft_filter_response, plot_fft_ab_response, plot_eyediagram
 
 font = {'family': 'Helvetica',
         'weight': 'normal',
@@ -35,16 +35,16 @@ if __name__ == "__main__":
     n_symbols_val = int(1e7)  # number of symbols used for SER calculation
     samples_per_symbol = 4
     baud_rate = int(100e6)
-    thermal_noise_std = 0.12  # thermal noise after photodiode
+    thermal_noise_std = 0.05  # thermal noise after photodiode
     shot_noise_figure = 0.01  # shot noise (proportional to signal strength)
     mod_order = 4  # PAM
     rrc_rolloff = 0.5
-    learn_tx, tx_filter_length = False, 30
-    learn_rx, rx_filter_length = True, 30
+    learn_tx, tx_filter_length = True, 40
+    learn_rx, rx_filter_length = True, 40
     dac_bwl_relative_cutoff = 0.8  # low-pass filter cuttoff relative to bandwidth of the RRC pulse
     adc_bwl_relative_cutoff = 0.8
     eam_insertion_loss_db = 0.0
-    eam_voltage_pp = 2.5
+    eam_voltage_pp = 1.5
     eam_voltage_bias = -1.5
     eam_laser_power = 1.0
     use_1clr = True  # learning rate scheduling of the optimizer
@@ -53,7 +53,7 @@ if __name__ == "__main__":
     if learn_tx and learn_rx:
         figtitles = 'both'
 
-    figprefix = f"{FIGPREFIX}_{figtitles}_adc{adc_bwl_relative_cutoff}_dac{dac_bwl_relative_cutoff}"
+    figprefix = f"{FIGPREFIX}_{figtitles}_vpp{eam_voltage_pp}"
 
     if not os.path.exists(FIGURE_DIR):
         os.mkdir(FIGURE_DIR)
@@ -103,7 +103,8 @@ if __name__ == "__main__":
     n_bits = int(np.log2(len(modulation_scheme.constellation)) * n_symbols_val)
     bit_sequence = random_obj.integers(0, 2, size=n_bits)
     a = modulation_scheme.modulate(bit_sequence)
-    ahat = imdd_system.evaluate(a)
+    rx_out = imdd_system.evaluate(a, decimate=False)
+    ahat = rx_out[::samples_per_symbol]
     ser, delay = calc_ser_pam(ahat, a, discard=100)
     print(f"SER: {ser} (delay: {delay})")
 
@@ -155,7 +156,6 @@ if __name__ == "__main__":
     plt.tight_layout()
 
 
-
     # Plot distribution of symbols
     fig, ax = plt.subplots(figsize=FIGSIZE)
     ax.hist(ahat, bins=100, density=True)
@@ -193,5 +193,15 @@ if __name__ == "__main__":
     if save_figures:
         fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_modulator_response.eps"), format='eps')
         fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_modulator_response.png"), dpi=DPI)
+
+    # Eyediagram
+    fig, ax = plt.subplots(figsize=FIGSIZE)
+    plot_eyediagram(rx_out, ax, imdd_system.Ts, samples_per_symbol, decimation=1000)
+    ax.set_title('Eyediagram')
+    ax.set_xlabel('time [s]')
+
+    if save_figures:
+        fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_eyediagram.eps"), format='eps')
+        fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_eyediagram.png"), dpi=DPI)
 
     plt.show()

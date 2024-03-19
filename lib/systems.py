@@ -222,7 +222,7 @@ class LearnableTransmissionSystem(object):
     def forward(self, symbols_up: torch.TensorType) -> torch.TensorType:
         raise NotImplementedError
 
-    def forward_batched(self, symbols_up: torch.TensorType, batch_size: int) -> torch.TensorType:
+    def _eval(self, symbols_up: torch.TensorType, batch_size: int, decimate: bool = True) -> torch.TensorType:
         raise NotImplementedError
 
     def get_parameters(self):
@@ -300,14 +300,14 @@ class LearnableTransmissionSystem(object):
         if return_loss:
             return loss_per_batch
 
-    def evaluate(self, symbols: npt.ArrayLike):
+    def evaluate(self, symbols: npt.ArrayLike, decimate: bool = True):
         # Upsample
         symbols_up = np.zeros(self.sps * len(symbols), dtype=symbols.dtype)
         symbols_up[0::self.sps] = symbols
         symbols_up = torch.from_numpy(symbols_up)
         # Run forward pass without gradient information - run batched version to not run into memory problems
         with torch.no_grad():
-            rx_out = self.forward_batched(symbols_up, batch_size=self.eval_batch_size)
+            rx_out = self._eval(symbols_up, batch_size=self.eval_batch_size, decimate=decimate)
 
         return rx_out.detach().cpu().numpy()
 
@@ -399,7 +399,7 @@ class BasicAWGN(LearnableTransmissionSystem):
 
         return rx_filter_out
 
-    def forward_batched(self, symbols_up: torch.TensorType, batch_size: int):
+    def _eval(self, symbols_up: torch.TensorType, batch_size: int, decimate: bool = True):
         # Input is assumed to be upsampled sybmols
         # Apply pulse shaper
         x = self.pulse_shaper.forward_batched(symbols_up, batch_size)
@@ -412,6 +412,8 @@ class BasicAWGN(LearnableTransmissionSystem):
         y = x + noise_std * torch.randn(x.shape)
 
         # Apply rx filter
+        if not decimate:
+            self.rx_filter.set_stride(1)  # output all samples from rx_filter
         rx_filter_out = self.rx_filter.forward_batched(y, batch_size)
 
         # Rescale to constellation (if self.normalization_after_tx is set)
@@ -595,7 +597,7 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
 
         return rx_filter_out
 
-    def forward_batched(self, symbols_up: torch.TensorType, batch_size: int):
+    def _eval(self, symbols_up: torch.TensorType, batch_size: int, decimate: bool = True):
         # Input is assumed to be upsampled sybmols
         # Apply pulse shaper
         x = self.pulse_shaper.forward_batched(symbols_up, batch_size)
@@ -614,6 +616,8 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         y_lp = self.adc.forward_batched(y, batch_size)
 
         # Apply rx filter
+        if not decimate:
+            self.rx_filter.set_stride(1)  # output all samples from rx_filter
         rx_filter_out = self.rx_filter.forward_batched(y_lp, batch_size)
 
         # Power normalize and rescale to constellation
@@ -861,7 +865,7 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
 
         return rx_filter_out
 
-    def forward_batched(self, symbols_up: torch.TensorType, batch_size: int):
+    def _eval(self, symbols_up: torch.TensorType, batch_size: int, decimate: bool = True):
         # Input is assumed to be upsampled sybmols
         # Apply pulse shaper
         x = self.pulse_shaper.forward_batched(symbols_up, batch_size)
@@ -885,6 +889,8 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
         y_lp = self.adc.forward_batched(y, batch_size)
 
         # Apply rx filter
+        if not decimate:
+            self.rx_filter.set_stride(1)  # output all samples from rx_filter
         rx_filter_out = self.rx_filter.forward_batched(y_lp, batch_size)
 
         # Power normalize and rescale to constellation
@@ -1062,11 +1068,11 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         # Define EAM
         xmax = np.sqrt(np.max(self.constellation)**2 / self.sps)  # assumes that constellation is symmetric around zero
         self.eam = ElectroAbsorptionModulator(insertion_loss=eam_insertion_loss_db,
-                                            pp_voltage=eam_voltage_pp,
-                                            bias_voltage=eam_voltage_bias,
-                                            laser_power=eam_laser_power,
-                                            dac_min_max=(-xmax, xmax),  # conversion from digital signal to voltage
-                                            linear_absorption=eam_linear_absorption)
+                                              pp_voltage=eam_voltage_pp,
+                                              bias_voltage=eam_voltage_bias,
+                                              laser_power=eam_laser_power,
+                                              dac_min_max=(-xmax, xmax),  # conversion from digital signal to voltage
+                                              linear_absorption=eam_linear_absorption)
 
         # Define photodiode
         self.photodiode = Photodiode(thermal_noise_std=noise_std, shot_noise_figure=shot_noise_figure,
@@ -1136,7 +1142,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
 
         return rx_filter_out
 
-    def forward_batched(self, symbols_up: torch.TensorType, batch_size: int):
+    def _eval(self, symbols_up: torch.TensorType, batch_size: int, decimate: bool = True):
         # Input is assumed to be upsampled sybmols
         # Apply pulse shaper
         x = self.pulse_shaper.forward_batched(symbols_up, batch_size)
@@ -1158,6 +1164,8 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         y_norm = (y_lp - y_lp.mean()) / (y_lp.std())
 
         # Apply rx filter - applies stride inside filter (outputs sps = 1)
+        if not decimate:
+            self.rx_filter.set_stride(1)  # output all samples from rx_filter
         rx_filter_out = self.rx_filter.forward_batched(y_norm, batch_size)
 
         # Power normalize and rescale to constellation
