@@ -13,6 +13,7 @@ from commpy.filters import rrcosfilter
 from .filtering import FIRfilter, BesselFilter, BrickWallFilter, AllPassFilter, filter_initialization
 from .utility import find_max_variance_sample
 from .devices import ElectroAbsorptionModulator, Photodiode
+from .channels import SingleModeFiber
 
 # TODO: Implement GPU support
 
@@ -1009,14 +1010,17 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
 
         symbols -> upsampling -> pulse shaping -> dac -> eam
                                                           |
-                                                          |
+                                                        channel (SMF)
                                                           |
           <-  symbol decision <-  filtering <- adc <- photodiode
 
     """
-    def __init__(self, sps, noise_std, baud_rate, learning_rate, batch_size, constellation,
+    def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  eam_insertion_loss_db, eam_voltage_pp, eam_laser_power, eam_voltage_bias,
-                 learn_rx, learn_tx, rx_filter_length, tx_filter_length, shot_noise_figure,
+                 learn_rx, learn_tx, rx_filter_length, tx_filter_length, pd_dark_current,
+                 smf_fiber_length=2.0, smf_carrier_wl=1270.0, smf_dispersion_slope=0.092,
+                 smf_zero_disp_wl=1310.0, smf_attenuation=0.0, pd_temperature=20.0,
+                 pd_impedance_load=50.0, pd_responsivity=1.0,
                  eam_linear_absorption=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5, 
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
@@ -1052,32 +1056,39 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
 
         self.rx_filter = FIRfilter(filter_weights=rx_filter_init, trainable=learn_rx, stride=self.sps)
 
-        # Define bandwidth limitation filters - low pass filter with cutoff relative to bw of RRC
-        rrc_bw = 0.5 / (1 / baud_rate)
+        # Define bandwidth limitation filters - low pass filter with cutoff relative to bw of baseband
+        info_bw = 0.5 * baud_rate
 
         # Digital-to-analog (DAC) converter
         self.dac = AllPassFilter()
         if dac_bwl_relative_cutoff is not None:
-            self.dac = BesselFilter(bessel_order=5, cutoff_hz=rrc_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
+            self.dac = BesselFilter(bessel_order=5, cutoff_hz=info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
 
         # Analog-to-digial (ADC) converter
         self.adc = AllPassFilter()
         if adc_bwl_relative_cutoff is not None:
-            self.adc = BesselFilter(bessel_order=5, cutoff_hz=rrc_bw * adc_bwl_relative_cutoff, fs=1/self.Ts)
+            self.adc = BesselFilter(bessel_order=5, cutoff_hz=info_bw * adc_bwl_relative_cutoff, fs=1/self.Ts)
 
         # Define EAM
         xmax = np.sqrt(np.max(self.constellation)**2 / self.sps)  # assumes that constellation is symmetric around zero
         self.eam = ElectroAbsorptionModulator(insertion_loss=eam_insertion_loss_db,
                                               pp_voltage=eam_voltage_pp,
                                               bias_voltage=eam_voltage_bias,
-                                              laser_power=eam_laser_power,
+                                              laser_power_dbm=eam_laser_power,
                                               dac_min_max=(-xmax, xmax),  # conversion from digital signal to voltage
                                               linear_absorption=eam_linear_absorption)
 
+        # Define channel - single mode fiber with chromatic dispersion
+        self.channel = SingleModeFiber(fiber_length=smf_fiber_length, attenutation=smf_attenuation,
+                                       dispersion_slope=smf_dispersion_slope,
+                                       zero_dispersion_wavelength=smf_zero_disp_wl,
+                                       carrier_wavelength=smf_carrier_wl, Fs=1/self.Ts)
+
+
         # Define photodiode
-        self.photodiode = Photodiode(thermal_noise_std=noise_std, shot_noise_figure=shot_noise_figure,
-                                     sps=self.sps)
-        self.noise_std = noise_std
+        self.photodiode = Photodiode(responsivity=pd_responsivity, temperature=pd_temperature,
+                                     dark_current=pd_dark_current, impedance_load=pd_impedance_load,
+                                     bandwidth=info_bw * adc_bwl_relative_cutoff, Fs=1/self.Ts, sps=self.sps)
         self.Es = None  # initialize energy-per-symbol to None as it will be calculated on the fly during eval
 
         # Define number of symbols to discard pr. batch due to boundary effects of convolution
@@ -1091,11 +1102,13 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         self.constellation_scale = np.sqrt(np.average(np.square(constellation)))
 
     def get_esn0_db(self):
+        # Get theoretical estimate of EsN0
+        # Assumes that the system is thermal-noise limited
         if self.Es is None:
             print('Warning! Evaluation was not run yet so EsN0 has been calculated yet.')
             return np.nan
 
-        return (10.0 * np.log10(self.Es / self.noise_std**2)).item()
+        return (10.0 * np.log10(self.Es / self.photodiode.get_thermal_noise_std()**2)).item()
 
     def set_esn0_db(self, new_esn0_db):
         raise Exception(f"Cannot set EsN0 in this type of channel. Noise is given. Modify v_pp instead.")
@@ -1125,8 +1138,11 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         # Apply EAM
         x_eam = self.eam.forward(x_lp)
 
+        # Apply channel model
+        x_chan = self.channel.forward(x_eam)
+
         # Photodiode - square law detection - adds noise inside (thermal and shot noise)
-        y = self.photodiode.forward(x_eam)
+        y = self.photodiode.forward(x_chan)
 
         # Apply bandwidth limitation in the ADC
         y_lp = self.adc.forward(y)
@@ -1153,8 +1169,11 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         # Apply EAM
         x_eam = self.eam.forward(x_lp)
 
+        # Apply channel model
+        x_chan = self.channel.forward(x_eam)
+
         # Photodiode - square law detection - adds noise inside (thermal and shot noise)
-        y = self.photodiode.forward(x_eam)
+        y = self.photodiode.forward(x_chan)
         self.set_energy_pr_symbol(self.photodiode.Es)
 
         # Apply bandwidth limitation in the ADC

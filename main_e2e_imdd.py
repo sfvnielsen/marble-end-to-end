@@ -32,11 +32,9 @@ if __name__ == "__main__":
     # Define simulation parameters
     save_figures = False
     n_symbols_train = int(15e5)
-    n_symbols_val = int(1e7)  # number of symbols used for SER calculation
+    n_symbols_val = int(1e6)  # number of symbols used for SER calculation
     samples_per_symbol = 4
     baud_rate = int(100e6)
-    thermal_noise_std = 0.05  # thermal noise after photodiode
-    shot_noise_figure = 0.01  # shot noise (proportional to signal strength)
     mod_order = 4  # PAM
     rrc_rolloff = 0.5
     learn_tx, tx_filter_length = True, 40
@@ -44,9 +42,11 @@ if __name__ == "__main__":
     dac_bwl_relative_cutoff = 0.8  # low-pass filter cuttoff relative to bandwidth of the RRC pulse
     adc_bwl_relative_cutoff = 0.8
     eam_insertion_loss_db = 0.0
-    eam_voltage_pp = 1.5
-    eam_voltage_bias = -1.5
-    eam_laser_power = 1.0
+    eam_voltage_pp = 3.0
+    eam_voltage_bias = -2.0
+    eam_laser_power = -10.0  # in dBm
+    channel_length = 10.0  # km
+    pd_dark_current = 10e-9  # A
     use_1clr = True  # learning rate scheduling of the optimizer
 
     figtitles = 'pulseshaping' if learn_tx else 'rxfilt'
@@ -72,8 +72,9 @@ if __name__ == "__main__":
 
     # Initialize learnable transmission system
     imdd_system = IntensityModulationChannel(eam_insertion_loss_db=eam_insertion_loss_db, eam_laser_power=eam_laser_power, eam_voltage_pp=eam_voltage_pp,
-                                             eam_voltage_bias=eam_voltage_bias, sps=samples_per_symbol, noise_std=thermal_noise_std, baud_rate=baud_rate,
-                                             shot_noise_figure=shot_noise_figure, eam_linear_absorption=False,
+                                             eam_voltage_bias=eam_voltage_bias, sps=samples_per_symbol, baud_rate=baud_rate,
+                                             pd_dark_current=pd_dark_current, smf_fiber_length=channel_length,
+                                             eam_linear_absorption=False,
                                              learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                              learn_tx=learn_tx, learn_rx=learn_rx, rrc_rolloff=rrc_rolloff,
                                              tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
@@ -179,16 +180,22 @@ if __name__ == "__main__":
     # Plot voltage-to-absorption function - compare with (Liang and Kahn)
     v = torch.linspace(-4.0, 0.0, 1000)
     alpha_db = imdd_system.eam.spline_object.evaluate(v)
-    fig, ax = plt.subplots(figsize=FIGSIZE)
-    ax.plot(v, alpha_db)
-    ax.plot(imdd_system.eam.x_knee_points, imdd_system.eam.y_knee_points, 'ro')
-    ax.axvline(imdd_system.eam.voltage_min, color='k', linestyle='--')
-    ax.axvline((imdd_system.eam.voltage_min - imdd_system.eam.pp_voltage), color='k', linestyle='--')
-    ax.set_xlabel('Voltage')
-    ax.set_ylabel('Absorption [dB]')
-    ax.invert_xaxis()
-    ax.invert_yaxis()
-    ax.grid()
+    fig, ax = plt.subplots(figsize=FIGSIZE, ncols=2)
+    ax[0].plot(v, alpha_db)
+    ax[0].plot(imdd_system.eam.x_knee_points, imdd_system.eam.y_knee_points, 'ro')
+    ax[0].axvline(imdd_system.eam.voltage_min, color='k', linestyle='--')
+    ax[0].axvline((imdd_system.eam.voltage_min - imdd_system.eam.pp_voltage), color='k', linestyle='--')
+    ax[0].set_xlabel('Voltage')
+    ax[0].set_ylabel('Absorption [dB]')
+    ax[0].invert_xaxis()
+    ax[0].invert_yaxis()
+    ax[0].grid()
+
+    xin = torch.linspace(-0.1 + imdd_system.eam.x_min, 0.1 + imdd_system.eam.x_max, 1000)
+    ax[1].plot(xin, imdd_system.eam.forward(xin))
+    ax[1].set_xlabel('Digital signal')
+    ax[1].set_ylabel('Optical field amplitude')
+    ax[1].grid()
 
     if save_figures:
         fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_modulator_response.eps"), format='eps')
@@ -196,7 +203,7 @@ if __name__ == "__main__":
 
     # Eyediagram
     fig, ax = plt.subplots(figsize=FIGSIZE)
-    plot_eyediagram(rx_out, ax, imdd_system.Ts, samples_per_symbol, decimation=1000)
+    plot_eyediagram(rx_out, ax, imdd_system.Ts, samples_per_symbol, decimation=n_symbols_val//int(1e4))
     ax.set_title('Eyediagram')
     ax.set_xlabel('time [s]')
 
