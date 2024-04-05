@@ -12,7 +12,7 @@ from commpy.filters import rrcosfilter
 
 from .filtering import FIRfilter, BesselFilter, BrickWallFilter, AllPassFilter, filter_initialization
 from .utility import find_max_variance_sample
-from .devices import ElectroAbsorptionModulator, Photodiode
+from .devices import ElectroAbsorptionModulator, Photodiode, IdealLinearModulator
 from .channels import SingleModeFiber
 
 # TODO: Implement GPU support
@@ -1067,16 +1067,19 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
             self.adc = BesselFilter(bessel_order=5, cutoff_hz=info_bw * adc_bwl_relative_cutoff, fs=1/self.Ts)
 
         # Define EAM
-        xmax = np.sqrt(np.max(self.constellation)**2 / self.sps)  # assumes that constellation is symmetric around zero
-        self.eam = ElectroAbsorptionModulator(dac_min_max=(-xmax, xmax),  # conversion from digital signal to voltage
-                                              **eam_config)
+        if eam_config['ideal']:
+            self.modulator = IdealLinearModulator(laser_power_dbm=eam_config['laser_power_dbm'])
+        else:
+            xmax = np.sqrt(np.max(self.constellation)**2 / self.sps)  # assumes that constellation is symmetric around zero
+            self.modulator = ElectroAbsorptionModulator(dac_min_max=(-xmax, xmax),  # conversion from digital signal to voltage
+                                                        **eam_config)
 
         # Define channel - single mode fiber with chromatic dispersion
         self.channel = SingleModeFiber(Fs=1/self.Ts, **smf_config)
 
         # Define photodiode
-        self.photodiode = Photodiode(bandwidth=info_bw * adc_bwl_relative_cutoff, Fs=1/self.Ts, sps=self.sps,
-                                     **photodiode_config)
+        self.photodiode = Photodiode(bandwidth=info_bw * adc_bwl_relative_cutoff if adc_bwl_relative_cutoff is not None else info_bw,
+                                     Fs=1/self.Ts, sps=self.sps, **photodiode_config)
         self.Es = None  # initialize energy-per-symbol to None as it will be calculated on the fly during eval
 
         # Define number of symbols to discard pr. batch due to boundary effects of convolution
@@ -1124,7 +1127,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         x_lp = self.dac.forward(x)
 
         # Apply EAM
-        x_eam = self.eam.forward(x_lp)
+        x_eam = self.modulator.forward(x_lp)
 
         # Apply channel model
         x_chan = self.channel.forward(x_eam)
@@ -1155,8 +1158,8 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         x_lp = self.dac.forward_batched(x, batch_size)
 
         # Apply EAM
-        x_eam = self.eam.forward(x_lp)
-        print(f"EAM: Laser power {10.0 * np.log10(self.eam.laser_power / 1e-3) } [dBm]")
+        x_eam = self.modulator.forward(x_lp)
+        print(f"EAM: Laser power {10.0 * np.log10(self.modulator.laser_power / 1e-3) } [dBm]")
         print(f"EAM: Power at output {10.0 * np.log10(np.average(np.square(x_eam.detach().numpy())) / 1e-3)} [dBm]")
 
         # Apply channel model

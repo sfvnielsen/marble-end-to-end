@@ -32,16 +32,16 @@ FIGPREFIX = 'e2e_imdd'
 if __name__ == "__main__":
     # Define simulation parameters
     save_figures = False
-    n_symbols_train = int(15e5)
+    n_symbols_train = int(1e6)
     n_symbols_val = int(1e6)  # number of symbols used for SER calculation
     samples_per_symbol = 4
     baud_rate = int(100e9)
     mod_order = 4  # PAM
-    rrc_rolloff = 0.5
+    rrc_rolloff = 0.1
     learn_tx, tx_filter_length = True, 80
-    learn_rx, rx_filter_length = True, 80
-    dac_bwl_relative_cutoff = 0.8  # low-pass filter cuttoff relative to bandwidth of the RRC pulse
-    adc_bwl_relative_cutoff = 0.8
+    learn_rx, rx_filter_length = False, 80
+    dac_bwl_relative_cutoff = 0.9  # low-pass filter cuttoff relative to information bandwidth
+    adc_bwl_relative_cutoff = 0.9
     use_1clr = True
 
     # Configuration of electro absorption modulator
@@ -49,16 +49,18 @@ if __name__ == "__main__":
         'insertion_loss': 0.0,
         'pp_voltage': 3.0,
         'bias_voltage': -1.5,
-        'laser_power_dbm': -10.0,
-        'linear_absorption': False
+        'laser_power_dbm': -7.5,
+        'ideal': True
     }
 
     # Channel configuration - single model fiber
     smf_config = {
-        'fiber_length': 2.0,
-        'attenuation': 0.2,
-        'carrier_wavelength': 1550,
-        'dispersion_parameter': 16.0
+        'fiber_length': 1.0,
+        'attenuation': 0.0,
+        'carrier_wavelength': 1270,
+        'zero_dispersion_wavelength': 1310,
+        'dispersion_slope': 0.092
+        # 'dispersion_parameter': 16.0
     }
 
     # Configuration of the photodiode
@@ -87,7 +89,7 @@ if __name__ == "__main__":
     random_obj = np.random.default_rng(seed=seed)
 
     # Optimization parameters
-    learning_rate = 1e-4
+    learning_rate = 1e-5
     batch_size = 1000
 
     # Initialize learnable transmission system
@@ -174,7 +176,6 @@ if __name__ == "__main__":
 
     plt.tight_layout()
 
-
     # Plot distribution of symbols
     fig, ax = plt.subplots(figsize=FIGSIZE)
     ax.hist(ahat, bins=100, density=True)
@@ -198,29 +199,45 @@ if __name__ == "__main__":
     # Plot voltage-to-absorption function - compare with (Liang and Kahn)
     v = torch.linspace(-4.0, 0.0, 1000)
     fig, ax = plt.subplots(figsize=FIGSIZE, ncols=2)
-    if eam_config['linear_absorption']:
+    if eam_config['ideal']:
         ax[0].plot(v, v)
+        xin = torch.linspace(-1.0, 1.0, 1000)
+        ax[1].plot(xin, imdd_system.modulator.forward(xin))
+        fig.suptitle('Ideal modulator...')
     else:
-        alpha_db = imdd_system.eam.spline_object.evaluate(v)
+        alpha_db = imdd_system.modulator.spline_object.evaluate(v)
         ax[0].plot(v, alpha_db)
-        ax[0].plot(imdd_system.eam.x_knee_points, imdd_system.eam.y_knee_points, 'ro')
-    ax[0].axvline(imdd_system.eam.voltage_min, color='k', linestyle='--')
-    ax[0].axvline((imdd_system.eam.voltage_min - imdd_system.eam.pp_voltage), color='k', linestyle='--')
-    ax[0].set_xlabel('Voltage')
-    ax[0].set_ylabel('Absorption [dB]')
-    ax[0].invert_xaxis()
-    ax[0].invert_yaxis()
-    ax[0].grid()
+        ax[0].plot(imdd_system.modulator.x_knee_points, imdd_system.modulator.y_knee_points, 'ro')
+        ax[0].axvline(imdd_system.modulator.voltage_min, color='k', linestyle='--')
+        ax[0].axvline((imdd_system.modulator.voltage_min - imdd_system.modulator.pp_voltage), color='k', linestyle='--')
+        ax[0].set_xlabel('Voltage')
+        ax[0].set_ylabel('Absorption [dB]')
+        ax[0].invert_xaxis()
+        ax[0].invert_yaxis()
+        ax[0].grid()
 
-    xin = torch.linspace(-0.1 + imdd_system.eam.x_min, 0.1 + imdd_system.eam.x_max, 1000)
-    ax[1].plot(xin, imdd_system.eam.forward(xin))
-    ax[1].set_xlabel('Digital signal')
-    ax[1].set_ylabel('Optical field amplitude')
-    ax[1].grid()
+        xin = torch.linspace(-0.1 + imdd_system.modulator.x_min, 0.1 + imdd_system.modulator.x_max, 1000)
+        ax[1].plot(xin, imdd_system.modulator.forward(xin))
+        ax[1].set_xlabel('Digital signal')
+        ax[1].set_ylabel('Optical field amplitude')
+        ax[1].grid()
 
     if save_figures:
         fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_modulator_response.eps"), format='eps')
         fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_modulator_response.png"), dpi=DPI)
+
+    # Plot channel phase response
+    f, channelH = imdd_system.channel.get_fq_filter(len(a) * samples_per_symbol)
+    fig, ax = plt.subplots(figsize=FIGSIZE)
+    ax.plot(f, np.unwrap(np.angle(channelH)))
+    ax.set_xlabel('Frequency')
+    ax.set_ylabel('Phase response')
+    ax.set_title(f"Phase response of channel. Fiber length: {smf_config['fiber_length']} [km]")
+    ax.grid()
+
+    if save_figures:
+        fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_channel_phase.eps"), format='eps')
+        fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_channel_phase.png"), dpi=DPI)
 
     # Eyediagram
     fig, ax = plt.subplots(figsize=FIGSIZE)

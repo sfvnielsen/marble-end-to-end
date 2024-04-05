@@ -31,6 +31,7 @@ def plot_fft_filter_response(h: npt.ArrayLike, ax: plt.Axes, Ts: float,
 
     # Plot ampltidue response in dB domain
     ax.plot(fqs_freqz, 20.0 * np.log10(fftshift(np.absolute(H))), label=plot_label)
+    ax.grid(True)
 
 
 def plot_fft_ab_response(fb: npt.ArrayLike, fa: npt.ArrayLike,
@@ -43,6 +44,7 @@ def plot_fft_ab_response(fb: npt.ArrayLike, fa: npt.ArrayLike,
 
     # Plot ampltidue response in dB domain
     ax.plot(fqs_freqz, 20.0 * np.log10(fftshift(np.absolute(H)) + eps), label=plot_label)
+    ax.grid(True)
 
 def plot_fft(x: npt.ArrayLike, ax: plt.Axes, Ts: float,
              plot_label=None):
@@ -54,6 +56,7 @@ def plot_fft(x: npt.ArrayLike, ax: plt.Axes, Ts: float,
     Hshifted = fftshift(H)
 
     ax.plot(fqs, 20.0 * np.log10(np.absolute(Hshifted) + eps), label=plot_label)
+    ax.grid(True)
 
 
 def plot_eyediagram(rx_out: npt.ArrayLike, ax: plt.Axes, Ts: float, sps: int, histogram: bool = False, decimation=10):
@@ -63,4 +66,4 @@ def plot_eyediagram(rx_out: npt.ArrayLike, ax: plt.Axes, Ts: float, sps: int, hi
         ax.hist2d(np.tile(t, len(rx_out) // len(t)), rx_out, bins=(n_symbol_periods * sps, 50), cmap='inferno')
     else:
         ax.plot(t, np.reshape(rx_out, (-1, sps * n_symbol_periods))[::decimation].T, color='crimson', alpha=.1, lw=.5)
-    
+        ax.grid(True)

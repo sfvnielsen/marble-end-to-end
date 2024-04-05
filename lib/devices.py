@@ -9,6 +9,24 @@ from scipy.interpolate import CubicSpline
 from scipy.optimize import newton
 
 
+class IdealLinearModulator(object):
+    """
+        Ideal linear modulator
+        Converts input signal to a normalized voltage where difference between min/max is pp_voltage
+
+    """
+    def __init__(self, laser_power_dbm):
+        # Parse input arguments
+        self.laser_power = 10 ** (laser_power_dbm / 10) * 1e-3  # [Watt]
+
+    def forward(self, x):
+        # Convert x to voltage (based on insertion loss and pp_voltage)
+        z = (x - x.min()) / (x.max()- x.min())  # normalize
+
+        # Return transmitted field amplitude - assumes to be used together with a square-law photodetector
+        return torch.sqrt(self.laser_power * z)
+
+
 class ElectroAbsorptionModulator(object):
     """
         Implementation of and electro absorption modulator (EAM) as used in

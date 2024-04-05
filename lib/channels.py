@@ -4,7 +4,7 @@
 
 import torch
 import numpy as np
-from torch.fft import fft, ifft, fftfreq
+from torch.fft import fft, ifft, fftfreq, fftshift
 
 class SingleModeFiber(object):
     """
@@ -54,7 +54,7 @@ class SingleModeFiber(object):
         self.dispersion_parameter = dispersion_parameter
         if self.dispersion_parameter is None:
             # Convert zero_dispersion_wavelength and carrier_wavelength to dispersion parameter (cf. Liang and Kahn, 2023)
-            self.dispersion_parameter = dispersion_slope * (carrier_wavelength - zero_dispersion_wavelength**4 / carrier_wavelength**3)  # [ps / (nm * km)]
+            self.dispersion_parameter = -dispersion_slope * (carrier_wavelength - zero_dispersion_wavelength**4 / carrier_wavelength**3)  # [ps / (nm * km)]
 
         self.alpha = self.attenuation / (10 * np.log10(np.exp(1.0)))  # [1/km]
         carrier_wavelength_in_km = self.carrier_wavelength / (1e9 * 1e3)  # from nm to km
@@ -62,10 +62,15 @@ class SingleModeFiber(object):
 
     # FIXME: Add symbol delay?
 
+    def _calculate_fq_filter(self, omega):
+        return torch.exp(-self.alpha/2 * self.fiber_length + 1j * (self.beta2 / 2) * (omega**2) * self.fiber_length)
+
+    def get_fq_filter(self, signal_length):
+        freq = self.Fs * fftfreq(signal_length)
+        return fftshift(freq).numpy(), self._calculate_fq_filter(freq).detach().numpy()
 
     def forward(self, x: torch.Tensor):
-        # λ = c_kms / Fc
         Nfft = len(x)
-        freq = 2 * torch.pi * self.Fs * fftfreq(Nfft)
-        xo = ifft(fft(x) * torch.exp(-self.alpha/2 * self.fiber_length + 1j * (self.beta2 / 2) * (freq**2) * self.fiber_length))
+        omega = 2 * torch.pi * self.Fs * fftfreq(Nfft)
+        xo = ifft(fft(x) * self._calculate_fq_filter(omega))
         return xo.real
