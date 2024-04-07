@@ -12,16 +12,17 @@ from scipy.optimize import newton
 class IdealLinearModulator(object):
     """
         Ideal linear modulator
-        Converts input signal to a normalized voltage where difference between min/max is pp_voltage
-
+        
     """
-    def __init__(self, laser_power_dbm):
+    def __init__(self, laser_power_dbm, pp_voltage, dac_min_max):
         # Parse input arguments
         self.laser_power = 10 ** (laser_power_dbm / 10) * 1e-3  # [Watt]
+        self.pp_voltage = pp_voltage  # "peak-to-peak voltage"
+        self.x_min, self.x_max = dac_min_max
 
     def forward(self, x):
-        # Convert x to voltage (based on insertion loss and pp_voltage)
-        z = (x - x.min()) / (x.max()- x.min())  # normalize
+        # Convert x to voltage - assumes that x is properly normalized to [0, 1] range
+        z = self.pp_voltage * (x - self.x_min) / (self.x_max - self.x_min)
 
         # Return transmitted field amplitude - assumes to be used together with a square-law photodetector
         return torch.sqrt(self.laser_power * z)
@@ -68,6 +69,7 @@ class ElectroAbsorptionModulator(object):
         self.y_knee_points = self.ABSORPTION_KNEE_POINTS_Y if not linear_absorption else self.LINEAR_ABSORPTION_KNEE_POINTS_Y
 
         # TODO: Modulator chirp
+        # TODO: Map voltages to powers such that distance between them is preserved. How to do that when pulse shaping is involved?
 
         # Caculate the cubic spline coefficients based on the given knee-points
         spline_coefficients = natural_cubic_spline_coeffs(self.x_knee_points, self.y_knee_points[:, None])

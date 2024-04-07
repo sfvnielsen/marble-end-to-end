@@ -38,24 +38,25 @@ if __name__ == "__main__":
     baud_rate = int(100e9)
     mod_order = 4  # PAM
     rrc_rolloff = 0.1
-    learn_tx, tx_filter_length = True, 80
-    learn_rx, rx_filter_length = False, 80
+    learn_tx, tx_filter_length = True, 20
+    learn_rx, rx_filter_length = True, 20
     dac_bwl_relative_cutoff = 0.9  # low-pass filter cuttoff relative to information bandwidth
     adc_bwl_relative_cutoff = 0.9
     use_1clr = True
 
     # Configuration of electro absorption modulator
+    ideal_modulator = True
     eam_config = {
         'insertion_loss': 0.0,
-        'pp_voltage': 3.0,
+        'pp_voltage': 2.0,
         'bias_voltage': -1.5,
-        'laser_power_dbm': -7.5,
-        'ideal': True
+        'laser_power_dbm': -10.0,
+        'linear_absorption': True
     }
 
     # Channel configuration - single model fiber
     smf_config = {
-        'fiber_length': 1.0,
+        'fiber_length': 0.0,
         'attenuation': 0.0,
         'carrier_wavelength': 1270,
         'zero_dispersion_wavelength': 1310,
@@ -89,7 +90,7 @@ if __name__ == "__main__":
     random_obj = np.random.default_rng(seed=seed)
 
     # Optimization parameters
-    learning_rate = 1e-5
+    learning_rate = 1e-4
     batch_size = 1000
 
     # Initialize learnable transmission system
@@ -99,7 +100,8 @@ if __name__ == "__main__":
                                              tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                              adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                              tx_filter_init_type='rrc', rx_filter_init_type='rrc',
-                                             smf_config=smf_config, photodiode_config=photodiode_config, eam_config=eam_config)
+                                             smf_config=smf_config, photodiode_config=photodiode_config, eam_config=eam_config,
+                                             ideal_modulator=ideal_modulator)
 
     imdd_system.initialize_optimizer()
 
@@ -199,7 +201,7 @@ if __name__ == "__main__":
     # Plot voltage-to-absorption function - compare with (Liang and Kahn)
     v = torch.linspace(-4.0, 0.0, 1000)
     fig, ax = plt.subplots(figsize=FIGSIZE, ncols=2)
-    if eam_config['ideal']:
+    if ideal_modulator:
         ax[0].plot(v, v)
         xin = torch.linspace(-1.0, 1.0, 1000)
         ax[1].plot(xin, imdd_system.modulator.forward(xin))

@@ -1018,6 +1018,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  learn_rx, learn_tx, rx_filter_length, tx_filter_length, 
                  smf_config: dict, photodiode_config: dict, eam_config: dict,
+                 ideal_modulator=False,
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5, 
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
@@ -1067,10 +1068,13 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
             self.adc = BesselFilter(bessel_order=5, cutoff_hz=info_bw * adc_bwl_relative_cutoff, fs=1/self.Ts)
 
         # Define EAM
-        if eam_config['ideal']:
-            self.modulator = IdealLinearModulator(laser_power_dbm=eam_config['laser_power_dbm'])
+        xmax = np.sqrt(np.max(self.constellation)**2 / self.sps)  # assumes that constellation is symmetric around zero
+        if ideal_modulator:
+            print("Using ideal modulator - ignoring all other EAM config...")
+            self.modulator = IdealLinearModulator(laser_power_dbm=eam_config['laser_power_dbm'],
+                                                  pp_voltage=eam_config['pp_voltage'],
+                                                  dac_min_max=(-2 * xmax, 2 * xmax))
         else:
-            xmax = np.sqrt(np.max(self.constellation)**2 / self.sps)  # assumes that constellation is symmetric around zero
             self.modulator = ElectroAbsorptionModulator(dac_min_max=(-xmax, xmax),  # conversion from digital signal to voltage
                                                         **eam_config)
 
