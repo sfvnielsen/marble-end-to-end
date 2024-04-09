@@ -19,10 +19,12 @@ class IdealLinearModulator(object):
         self.laser_power = 10 ** (laser_power_dbm / 10) * 1e-3  # [Watt]
         self.pp_voltage = pp_voltage  # "peak-to-peak voltage"
         self.x_min, self.x_max = dac_min_max
+        self.relu = torch.nn.ReLU()  # used to truncate to positive values after normalization
 
     def forward(self, x):
-        # Convert x to voltage - assumes that x is properly normalized to [0, 1] range
+        # Convert x to "voltage" - clamp values below zero with relu
         z = self.pp_voltage * (x - self.x_min) / (self.x_max - self.x_min)
+        z = self.relu(z)
 
         # Return transmitted field amplitude - assumes to be used together with a square-law photodetector
         return torch.sqrt(self.laser_power * z)
