@@ -1104,6 +1104,9 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
             return np.nan
 
         return (10.0 * np.log10(self.Es / self.photodiode.get_thermal_noise_std()**2)).item()
+    
+    def get_received_power_dbm(self):
+        return self.photodiode.get_received_power_dbm().item()
 
     def set_esn0_db(self, new_esn0_db):
         raise Exception(f"Cannot set EsN0 in this type of channel. Noise is given. Modify v_pp or eam laser power instead.")
@@ -1172,6 +1175,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         # Photodiode - square law detection - adds noise inside (thermal and shot noise)
         y = self.photodiode.forward(x_chan)
         self.set_energy_pr_symbol(self.photodiode.Es)
+        print(f"Photodiode: Received power {self.photodiode.get_received_power_dbm()} [dBm]")
 
         # Apply bandwidth limitation in the ADC
         y_lp = self.adc.forward_batched(y, batch_size)

@@ -54,7 +54,7 @@ class SingleModeFiber(object):
         self.dispersion_parameter = dispersion_parameter
         if self.dispersion_parameter is None:
             # Convert zero_dispersion_wavelength and carrier_wavelength to dispersion parameter (cf. Liang and Kahn, 2023)
-            self.dispersion_parameter = -dispersion_slope * (carrier_wavelength - zero_dispersion_wavelength**4 / carrier_wavelength**3)  # [ps / (nm * km)]
+            self.dispersion_parameter = dispersion_slope * (carrier_wavelength - zero_dispersion_wavelength**4 / carrier_wavelength**3)  # [ps / (nm * km)]
 
         self.alpha = self.attenuation / (10 * np.log10(np.exp(1.0)))  # [1/km]
         carrier_wavelength_in_km = self.carrier_wavelength / (1e9 * 1e3)  # from nm to km
@@ -70,6 +70,7 @@ class SingleModeFiber(object):
         return fftshift(freq).numpy(), self._calculate_fq_filter(freq).detach().numpy()
 
     def forward(self, x: torch.Tensor):
+        # FIXME: Add zero padding before doing fft?
         Nfft = len(x)
         omega = 2 * torch.pi * self.Fs * fftfreq(Nfft)
         xo = ifft(fft(x) * self._calculate_fq_filter(omega))

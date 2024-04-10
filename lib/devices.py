@@ -141,9 +141,15 @@ class Photodiode(object):
 
         self.sps = sps
         self.Es = None  # energy pr. symbol after detection
+        self.Prec = None  # received power [dBm]
 
     def get_thermal_noise_std(self):
         return self.thermal_noise_std
+
+    def get_received_power_dbm(self):
+        if self.Prec is None:
+            raise Exception("Received power has not been calculated yet!")
+        return self.Prec
 
     def forward(self, x):
         # Generate thermal noise
@@ -158,7 +164,8 @@ class Photodiode(object):
         # Square law detection of input
         x2 = torch.square(torch.abs(x))
 
-        # Update energy pr. symbol before addition of noise
+        # Update energy pr. symbol and received power before addition of noise
+        self.Prec = 10.0 * torch.log10(torch.mean(x2) / 1e-3)
         self.Es = torch.mean(torch.sum(torch.square(torch.reshape(x2 - x2.mean(), (-1, self.sps))), dim=1))
 
         return x2 + thermal_noise + shot_noise
