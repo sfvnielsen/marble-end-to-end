@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
-from scipy.signal import freqz
+from scipy.signal import freqz, lti
 from scipy.fft import fftshift, fft
 
 
@@ -67,3 +67,20 @@ def plot_eyediagram(rx_out: npt.ArrayLike, ax: plt.Axes, Ts: float, sps: int, hi
     else:
         ax.plot(t, np.reshape(rx_out, (-1, sps * n_symbol_periods))[::decimation].T, color='crimson', alpha=.1, lw=.5)
         ax.grid(True)
+
+
+def plot_pole_zero(system_transfer_function: tuple, ax: plt.Axes):
+    lti_sys = lti(*system_transfer_function)
+
+    # Plot unit circle
+    rad = np.linspace(0, 2 * np.pi, 100)
+    ax.plot(np.cos(rad), np.sin(rad), 'k-')
+
+    # Plot poles
+    ax.plot(lti_sys.poles.real, lti_sys.poles.imag, 'rx')
+    
+    # Plot zeros
+    ax.plot(lti_sys.zeros.real, lti_sys.zeros.imag, 'ro')
+
+    ax.grid(True)
+    ax.axis('equal')

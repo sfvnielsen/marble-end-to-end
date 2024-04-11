@@ -1072,8 +1072,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         if ideal_modulator:
             print("Using ideal modulator - ignoring all other EAM config...")
             self.modulator = IdealLinearModulator(laser_power_dbm=eam_config['laser_power_dbm'],
-                                                  pp_voltage=eam_config['pp_voltage'],
-                                                  dac_min_max=(-2 * xmax, 2 * xmax))
+                                                  dac_min_max=(-xmax, xmax))
         else:
             self.modulator = ElectroAbsorptionModulator(dac_min_max=(-xmax, xmax),  # conversion from digital signal to voltage
                                                         **eam_config)
@@ -1105,6 +1104,9 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
 
         return (10.0 * np.log10(self.Es / self.photodiode.get_thermal_noise_std()**2)).item()
     
+    def get_launch_power_dbm(self):
+        return self.modulator.get_launch_power_dbm().item()
+
     def get_received_power_dbm(self):
         return self.photodiode.get_received_power_dbm().item()
 
@@ -1166,6 +1168,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
 
         # Apply EAM
         x_eam = self.modulator.forward(x_lp)
+        print(f"EAM: Power in digital domain: {10.0 * torch.log10(torch.mean(torch.square((x_lp - self.modulator.x_min) / (self.modulator.x_max - self.modulator.x_min))))}")
         print(f"EAM: Laser power {10.0 * np.log10(self.modulator.laser_power / 1e-3) } [dBm]")
         print(f"EAM: Power at output {10.0 * np.log10(np.average(np.square(x_eam.detach().numpy())) / 1e-3)} [dBm]")
 

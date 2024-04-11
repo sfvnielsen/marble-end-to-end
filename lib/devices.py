@@ -14,20 +14,28 @@ class IdealLinearModulator(object):
         Ideal linear modulator
         
     """
-    def __init__(self, laser_power_dbm, pp_voltage, dac_min_max):
+    def __init__(self, laser_power_dbm, dac_min_max):
         # Parse input arguments
         self.laser_power = 10 ** (laser_power_dbm / 10) * 1e-3  # [Watt]
-        self.pp_voltage = pp_voltage  # "peak-to-peak voltage"
         self.x_min, self.x_max = dac_min_max
         self.relu = torch.nn.ReLU()  # used to truncate to positive values after normalization
+        self.Plaunch_dbm = None
+
+    def get_launch_power_dbm(self):
+        if self.Plaunch_dbm is None:
+            raise Exception("Launch power has not been calculated yet!")
+
+        return self.Plaunch_dbm
 
     def forward(self, x):
         # Convert x to "voltage" - clamp values below zero with relu
-        z = self.pp_voltage * (x - self.x_min) / (self.x_max - self.x_min)
+        z = (x - self.x_min) / (self.x_max - self.x_min)
         z = self.relu(z)
 
         # Return transmitted field amplitude - assumes to be used together with a square-law photodetector
-        return torch.sqrt(self.laser_power * z)
+        y = torch.sqrt(self.laser_power * z)
+        self.Plaunch_dbm = 10.0 * torch.log10(torch.mean(torch.square(y)) / 1e-3)
+        return y
 
 
 class ElectroAbsorptionModulator(object):
@@ -88,6 +96,15 @@ class ElectroAbsorptionModulator(object):
         minmaxeval = self.spline_object.evaluate(torch.Tensor([1, 0]) * self.pp_voltage + self.bias_voltage + self.voltage_insertion_loss).squeeze().numpy()
         self.ex_ratio = minmaxeval[1] - minmaxeval[0]
 
+        # Initialize launch power
+        self.Plaunch_dbm = None
+    
+    def get_launch_power_dbm(self):
+        if self.Plaunch_dbm is None:
+            raise Exception("Launch power has not been calculated yet!")
+
+        return self.Plaunch_dbm
+
     def forward(self, x):
         # Convert x to voltage (based on insertion loss and pp_voltage)
         # FIXME: Flip such that large x-values correspond to most negative voltages
@@ -98,7 +115,9 @@ class ElectroAbsorptionModulator(object):
         alpha_db = self.spline_object.evaluate(v).squeeze()
 
         # Return transmitted field amplitude
-        return torch.sqrt(self.laser_power * torch.pow(10.0, -alpha_db / 10.0))
+        y = torch.sqrt(self.laser_power * torch.pow(10.0, -alpha_db / 10.0))
+        self.Plaunch_dbm = 10.0 * torch.log10(torch.mean(torch.square(y)) / 1e-3)
+        return y
 
 
 class Photodiode(object):
