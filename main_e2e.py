@@ -11,7 +11,7 @@ from scipy.signal import lfilter
 
 from lib.utility import calc_ser_pam, calc_theory_ser_pam
 from lib.systems import BasicAWGNwithBWL, MatchedFilterAWGNwithBWL
-from lib.plotting import plot_bar, plot_fft_filter_response, plot_fft_ab_response
+from lib.plotting import plot_bar, plot_fft_filter_response, plot_fft_ab_response, plot_pole_zero
 
 font = {'family': 'Helvetica',
         'weight': 'normal',
@@ -29,7 +29,7 @@ FIGPREFIX = 'e2e'
 
 if __name__ == "__main__":
     # Define simulation parameters
-    save_figures = False
+    save_figures = True
     n_symbols_train = int(15e5)
     n_symbols_val = int(5e5)  # number of symbols used for SER calculation
     samples_per_symbol = 4
@@ -162,6 +162,27 @@ if __name__ == "__main__":
     if save_figures:
         fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_system_response.eps"), format='eps')
         fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_system_response.png"), dpi=DPI)
+
+
+    # Plot the pole-zero plot of the system response up until before the Tx filter
+    fig, ax = plt.subplots(figsize=FIGSIZE)
+    total_response_b = np.copy(txfilt)
+    total_response_a = [1]
+    if dac_bwl_relative_cutoff:
+        total_response_b = np.polymul(dac_filter_b, total_response_b)
+        total_response_a = np.polymul(dac_filter_a, total_response_a)
+    if adc_bwl_relative_cutoff:
+        total_response_b = np.polymul(adc_filter_b, total_response_b)
+        total_response_a = np.polymul(adc_filter_a, total_response_a)
+    
+    plot_pole_zero((total_response_b, total_response_a), ax)
+    ax.set_xlabel('Real(z)')
+    ax.set_ylabel('Imag(z)')
+    ax.set_title('Pole-zero plot of system transfer function \n (without Rx filter)')
+
+    if save_figures:
+        fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_system_response_pole_zero.eps"), format='eps')
+        fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_system_response_pole_zero.png"), dpi=DPI)
 
 
     # Plot distribution of symbols
