@@ -8,7 +8,7 @@ from torchcubicspline import natural_cubic_spline_coeffs, NaturalCubicSpline
 from scipy.interpolate import CubicSpline
 from scipy.optimize import newton
 
-from lib.filtering import BesselFilter, AllPassFilter
+from .filtering import BesselFilter, AllPassFilter
 
 
 class IdealLinearModulator(object):
