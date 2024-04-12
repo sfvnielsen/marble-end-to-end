@@ -8,17 +8,17 @@ from torchcubicspline import natural_cubic_spline_coeffs, NaturalCubicSpline
 from scipy.interpolate import CubicSpline
 from scipy.optimize import newton
 
+from lib.filtering import BesselFilter, AllPassFilter
+
 
 class IdealLinearModulator(object):
     """
         Ideal linear modulator
         
     """
-    def __init__(self, laser_power_dbm, dac_min_max):
+    def __init__(self, laser_power_dbm):
         # Parse input arguments
         self.laser_power = 10 ** (laser_power_dbm / 10) * 1e-3  # [Watt]
-        self.x_min, self.x_max = dac_min_max
-        self.relu = torch.nn.ReLU()  # used to truncate to positive values after normalization
         self.Plaunch_dbm = None
 
     def get_launch_power_dbm(self):
@@ -27,13 +27,10 @@ class IdealLinearModulator(object):
 
         return self.Plaunch_dbm
 
-    def forward(self, x):
-        # Convert x to "voltage" - clamp values below zero with relu
-        z = (x - self.x_min) / (self.x_max - self.x_min)
-        z = self.relu(z)
-
+    def forward(self, v):
+        # Assumes that v is the input voltage (normalized to the [0, 1] range)
         # Return transmitted field amplitude - assumes to be used together with a square-law photodetector
-        y = torch.sqrt(self.laser_power * z)
+        y = torch.sqrt(self.laser_power * v)
         self.Plaunch_dbm = 10.0 * torch.log10(torch.mean(torch.square(y)) / 1e-3)
         return y
 
@@ -68,7 +65,7 @@ class ElectroAbsorptionModulator(object):
     LINEAR_ABSORPTION_KNEE_POINTS_X = torch.flip(torch.Tensor([0.0, -1.0,  -2.0, -3.0, -4.0]), (0,))  # driving voltage
     LINEAR_ABSORPTION_KNEE_POINTS_Y = torch.flip(torch.Tensor([0.0, 1.0,   2.0,  3.0,  4.0]), (0,))  # absorption in dB
 
-    def __init__(self, insertion_loss, pp_voltage, bias_voltage, laser_power_dbm, dac_min_max, linear_absorption=False):
+    def __init__(self, insertion_loss, pp_voltage, bias_voltage, laser_power_dbm, linear_absorption=False):
         # Parse input arguments
         self.insertion_loss = insertion_loss
         self.pp_voltage = pp_voltage
@@ -92,7 +89,6 @@ class ElectroAbsorptionModulator(object):
 
         # Input to forward is assumed to be a digital signal - convert to voltages using dac_min_max
         # (typically based on constellation values)
-        self.x_min, self.x_max = dac_min_max
         minmaxeval = self.spline_object.evaluate(torch.Tensor([1, 0]) * self.pp_voltage + self.bias_voltage + self.voltage_insertion_loss).squeeze().numpy()
         self.ex_ratio = minmaxeval[1] - minmaxeval[0]
 
@@ -105,14 +101,12 @@ class ElectroAbsorptionModulator(object):
 
         return self.Plaunch_dbm
 
-    def forward(self, x):
-        # Convert x to voltage (based on insertion loss and pp_voltage)
-        # FIXME: Flip such that large x-values correspond to most negative voltages
-        z = (x - self.x_min) / (self.x_max - self.x_min)  # normalize
-        v = self.pp_voltage * z + self.bias_voltage + self.voltage_insertion_loss
+    def forward(self, v):
+        # Assumes that v is the input voltage (normalized to the [0, 1] range)
+        z = self.pp_voltage * v + self.bias_voltage + self.voltage_insertion_loss
 
         # Calculate absorption from voltage
-        alpha_db = self.spline_object.evaluate(v).squeeze()
+        alpha_db = self.spline_object.evaluate(z).squeeze()
 
         # Return transmitted field amplitude
         y = torch.sqrt(self.laser_power * torch.pow(10.0, -alpha_db / 10.0))
@@ -188,3 +182,84 @@ class Photodiode(object):
         self.Es = torch.mean(torch.sum(torch.square(torch.reshape(x2 - x2.mean(), (-1, self.sps))), dim=1))
 
         return x2 + thermal_noise + shot_noise
+
+
+class DigitalToAnalogConverter(object):
+    """
+        DAC with bandwidth limitation modeled by a Bessel filter
+
+        TODO: Quantization added during eval
+    """
+    def __init__(self, bwl_cutoff, dac_min_max, fs, bit_resolution=None, bessel_order=5, dtype=torch.float64) -> None:
+        # Set attributes of DAC
+        self.dac_min_max = dac_min_max  # max-absolute value to be used in the digital signal
+        self.bit_resolution = bit_resolution  # FIXME: Not used yet
+
+        # Initialize bessel filter
+        self.lpf = AllPassFilter()
+        if bwl_cutoff is not None:
+            self.lpf = BesselFilter(bessel_order=bessel_order, cutoff_hz=bwl_cutoff, fs=fs, dtype=dtype)
+    
+    def get_sample_delay(self):
+        return self.lpf.get_sample_delay()
+    
+    def get_lpf_filter(self):
+        return self.lpf.get_filters()
+
+    def forward(self, x):
+        # Map digital signal to a voltage
+        v = (x + (self.dac_min_max)) / (2 * self.dac_min_max)
+
+        # Run lpf
+        v_lp = self.lpf.forward(v)
+        
+        return v_lp
+
+    def _eval(self, x):
+        # Map digital signal to a voltage
+        if self.bit_resolution:
+            raise NotImplementedError("Quantization is not implemted yet in this module...")
+        v = (x + (self.dac_min_max)) / (2 * self.dac_min_max)
+
+        # Run lpf
+        v_lp = self.lpf.forward(v)
+        
+        return v_lp
+
+
+class AnalogToDigitalConverter(object):
+    """
+        ADC with bandwidth limitation modeled by a Bessel filter
+
+        TODO: Quantization added during eval
+    """
+    def __init__(self, bwl_cutoff, fs, bit_resolution=None, bessel_order=5, dtype=torch.float64) -> None:
+        # Set attributes
+        self.bit_resolution = bit_resolution  # FIXME: Not used yet
+
+        # Initialize bessel filter
+        self.lpf = AllPassFilter()
+        if bwl_cutoff is not None:
+            self.lpf = BesselFilter(bessel_order=bessel_order, cutoff_hz=bwl_cutoff, fs=fs, dtype=dtype)
+
+    def get_sample_delay(self):
+        return self.lpf.get_sample_delay()
+
+    def get_lpf_filter(self):
+        return self.lpf.get_filters()
+
+    def forward(self, v):
+        # Run lpf
+        x_lp = self.lpf.forward(v)
+        
+        return x_lp
+
+    def _eval(self, v):
+        # Map digital signal to a voltage
+        if self.bit_resolution:
+            raise NotImplementedError("Quantization is not implemted yet in this module...")
+
+        # Run lpf
+        x_lp = self.lpf.forward(v)
+        
+        return x_lp

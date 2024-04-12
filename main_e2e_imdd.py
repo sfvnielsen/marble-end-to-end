@@ -37,9 +37,9 @@ if __name__ == "__main__":
     samples_per_symbol = 4
     baud_rate = int(100e9)
     mod_order = 4  # PAM
-    rrc_rolloff = 0.1
-    learn_tx, tx_filter_length = True, 20
-    learn_rx, rx_filter_length = True, 20
+    rrc_rolloff = 0.01
+    learn_tx, tx_filter_length = True, 80
+    learn_rx, rx_filter_length = True, 80
     dac_bwl_relative_cutoff = 0.9  # low-pass filter cuttoff relative to information bandwidth
     adc_bwl_relative_cutoff = 0.9
     use_1clr = True
@@ -48,15 +48,15 @@ if __name__ == "__main__":
     ideal_modulator = True
     eam_config = {
         'insertion_loss': 0.0,
-        'pp_voltage': 2.0,
+        'pp_voltage': 3.0,
         'bias_voltage': -1.5,
-        'laser_power_dbm': -10.0,
+        'laser_power_dbm': -5.0,
         'linear_absorption': True
     }
 
     # Channel configuration - single model fiber
     smf_config = {
-        'fiber_length': 0.0,
+        'fiber_length': 2.0,
         'attenuation': 0.0,
         'carrier_wavelength': 1270,
         'zero_dispersion_wavelength': 1310,
@@ -109,9 +109,9 @@ if __name__ == "__main__":
     adc_filter_b, adc_filter_a = None, None
     dac_filter_b, dac_filter_a = None, None
     if adc_bwl_relative_cutoff:
-        adc_filter_b, adc_filter_a = imdd_system.adc.get_filters()
+        adc_filter_b, adc_filter_a = imdd_system.adc.get_lpf_filter()
     if dac_bwl_relative_cutoff:
-        dac_filter_b, dac_filter_a = imdd_system.dac.get_filters()
+        dac_filter_b, dac_filter_a = imdd_system.dac.get_lpf_filter()
 
     # Generate training data
     n_bits = int(np.log2(len(modulation_scheme.constellation)) * n_symbols_train)
@@ -218,7 +218,8 @@ if __name__ == "__main__":
         ax[0].invert_yaxis()
         ax[0].grid()
 
-        xin = torch.linspace(-0.1 + imdd_system.modulator.x_min, 0.1 + imdd_system.modulator.x_max, 1000)
+        xin = torch.linspace(-imdd_system.dac.dac_min_max, imdd_system.dac.dac_min_max, 1000)
+        vin = (xin + (imdd_system.dac.dac_min_max)) / (2 * imdd_system.dac.dac_min_max)
         ax[1].plot(xin, imdd_system.modulator.forward(xin))
         ax[1].set_xlabel('Digital signal')
         ax[1].set_ylabel('Optical field amplitude')

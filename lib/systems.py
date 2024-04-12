@@ -12,7 +12,7 @@ from commpy.filters import rrcosfilter
 
 from .filtering import FIRfilter, BesselFilter, BrickWallFilter, AllPassFilter, filter_initialization
 from .utility import find_max_variance_sample
-from .devices import ElectroAbsorptionModulator, Photodiode, IdealLinearModulator
+from .devices import ElectroAbsorptionModulator, Photodiode, IdealLinearModulator, DigitalToAnalogConverter, AnalogToDigitalConverter
 from .channels import SingleModeFiber
 
 # TODO: Implement GPU support
@@ -1058,24 +1058,19 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         info_bw = 0.5 * baud_rate
 
         # Digital-to-analog (DAC) converter
-        self.dac = AllPassFilter()
-        if dac_bwl_relative_cutoff is not None:
-            self.dac = BesselFilter(bessel_order=5, cutoff_hz=info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
+        self.dac = DigitalToAnalogConverter(bwl_cutoff=info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts,
+                                            bessel_order=5, dac_min_max=np.sum(np.abs(tx_filter_init)) * np.sqrt(np.average(np.square(constellation)) / sps))
 
         # Analog-to-digial (ADC) converter
-        self.adc = AllPassFilter()
-        if adc_bwl_relative_cutoff is not None:
-            self.adc = BesselFilter(bessel_order=5, cutoff_hz=info_bw * adc_bwl_relative_cutoff, fs=1/self.Ts)
+        self.adc = AnalogToDigitalConverter(bwl_cutoff=info_bw * adc_bwl_relative_cutoff, fs=1/self.Ts,
+                                            bessel_order=5)
 
-        # Define EAM
-        xmax = np.sqrt(np.max(self.constellation)**2 / self.sps)  # assumes that constellation is symmetric around zero
+        # Define modulator
         if ideal_modulator:
             print("Using ideal modulator - ignoring all other EAM config...")
-            self.modulator = IdealLinearModulator(laser_power_dbm=eam_config['laser_power_dbm'],
-                                                  dac_min_max=(-xmax, xmax))
+            self.modulator = IdealLinearModulator(laser_power_dbm=eam_config['laser_power_dbm'])
         else:
-            self.modulator = ElectroAbsorptionModulator(dac_min_max=(-xmax, xmax),  # conversion from digital signal to voltage
-                                                        **eam_config)
+            self.modulator = ElectroAbsorptionModulator(**eam_config)
 
         # Define channel - single mode fiber with chromatic dispersion
         self.channel = SingleModeFiber(Fs=1/self.Ts, **smf_config)
@@ -1133,10 +1128,10 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         x = self.pulse_shaper.forward(symbols_up)
 
         # Apply bandwidth limitation in the DAC
-        x_lp = self.dac.forward(x)
+        v = self.dac.forward(x)
 
         # Apply EAM
-        x_eam = self.modulator.forward(x_lp)
+        x_eam = self.modulator.forward(v)
 
         # Apply channel model
         x_chan = self.channel.forward(x_eam)
@@ -1164,11 +1159,11 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         x = self.pulse_shaper.forward_batched(symbols_up, batch_size)
 
         # Apply bandwidth limitation in the DAC
-        x_lp = self.dac.forward_batched(x, batch_size)
+        v = self.dac.forward(x)
 
         # Apply EAM
-        x_eam = self.modulator.forward(x_lp)
-        print(f"EAM: Power in digital domain: {10.0 * torch.log10(torch.mean(torch.square((x_lp - self.modulator.x_min) / (self.modulator.x_max - self.modulator.x_min))))}")
+        x_eam = self.modulator.forward(v)
+        print(f"EAM: Power in digital domain: {10.0 * torch.log10(torch.mean(torch.square(v)))}")
         print(f"EAM: Laser power {10.0 * np.log10(self.modulator.laser_power / 1e-3) } [dBm]")
         print(f"EAM: Power at output {10.0 * np.log10(np.average(np.square(x_eam.detach().numpy())) / 1e-3)} [dBm]")
 
@@ -1181,7 +1176,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         print(f"Photodiode: Received power {self.photodiode.get_received_power_dbm()} [dBm]")
 
         # Apply bandwidth limitation in the ADC
-        y_lp = self.adc.forward_batched(y, batch_size)
+        y_lp = self.adc.forward(y)
 
         # Normalize
         y_norm = (y_lp - y_lp.mean()) / (y_lp.std())

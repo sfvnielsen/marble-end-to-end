@@ -84,9 +84,9 @@ if __name__ == "__main__":
     adc_filter_b, adc_filter_a = None, None
     dac_filter_b, dac_filter_a = None, None
     if adc_bwl_relative_cutoff:
-        adc_filter_b, adc_filter_a = non_lin_system.adc.get_filters()
+        adc_filter_b, adc_filter_a = non_lin_system.adc.get_lpf_filter()
     if dac_bwl_relative_cutoff:
-        dac_filter_b, dac_filter_a = non_lin_system.dac.get_filters()
+        dac_filter_b, dac_filter_a = non_lin_system.dac.get_lpf_filter()
 
     # Generate training data
     n_bits = int(np.log2(len(modulation_scheme.constellation)) * n_symbols_train)
