@@ -215,11 +215,13 @@ class DigitalToAnalogConverter(object):
         
         return v_lp
 
-    def _eval(self, x):
+    def eval(self, x):
         # Map digital signal to a voltage
         if self.bit_resolution:
             raise NotImplementedError("Quantization is not implemted yet in this module...")
         v = (x + (self.dac_min_max)) / (2 * self.dac_min_max)
+
+        print(f"DAC: Power in digital domain: {10.0 * torch.log10(torch.mean(torch.square(v)))}")
 
         # Run lpf
         v_lp = self.lpf.forward(v)
@@ -254,7 +256,7 @@ class AnalogToDigitalConverter(object):
         
         return x_lp
 
-    def _eval(self, v):
+    def eval(self, v):
         # Map digital signal to a voltage
         if self.bit_resolution:
             raise NotImplementedError("Quantization is not implemted yet in this module...")

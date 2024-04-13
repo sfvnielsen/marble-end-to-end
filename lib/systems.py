@@ -1159,11 +1159,10 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         x = self.pulse_shaper.forward_batched(symbols_up, batch_size)
 
         # Apply bandwidth limitation in the DAC
-        v = self.dac.forward(x)
+        v = self.dac.eval(x)
 
         # Apply EAM
         x_eam = self.modulator.forward(v)
-        print(f"EAM: Power in digital domain: {10.0 * torch.log10(torch.mean(torch.square(v)))}")
         print(f"EAM: Laser power {10.0 * np.log10(self.modulator.laser_power / 1e-3) } [dBm]")
         print(f"EAM: Power at output {10.0 * np.log10(np.average(np.square(x_eam.detach().numpy())) / 1e-3)} [dBm]")
 
@@ -1176,7 +1175,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         print(f"Photodiode: Received power {self.photodiode.get_received_power_dbm()} [dBm]")
 
         # Apply bandwidth limitation in the ADC
-        y_lp = self.adc.forward(y)
+        y_lp = self.adc.eval(y)
 
         # Normalize
         y_norm = (y_lp - y_lp.mean()) / (y_lp.std())
