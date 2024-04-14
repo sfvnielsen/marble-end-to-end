@@ -252,8 +252,17 @@ class LearnableTransmissionSystem(object):
 
     def update_model(self, loss):
         loss.backward()
+    
         if not self.optimizer:
             raise Exception("Optimizer was not initialized. Please call the 'initialize_optimizer' method before proceeding to optimize.")
+        
+        # Gradient norm clipping
+        for pgroup in self.optimizer.param_groups:
+            # FIXME: Abusing param groups a bit here.
+            # So far each param group corresponds to exatcly one parameter.
+            torch.nn.utils.clip_grad_norm(pgroup['params'], 1.0)  # clip all gradients to unit norm
+        
+        # Take gradient step.
         self.optimizer.step()
 
     def optimize(self, symbols: npt.ArrayLike, return_loss=False):
@@ -287,6 +296,7 @@ class LearnableTransmissionSystem(object):
 
             # Update model using backpropagation
             self.update_model(loss)
+
             this_lr = self.optimizer.param_groups[-1]['lr']
             if self.use_1clr:
                 lr_scheduler.step()
@@ -297,6 +307,10 @@ class LearnableTransmissionSystem(object):
 
             if return_loss:
                 loss_per_batch[b] = loss.item()
+            
+            if torch.isnan(loss):
+                print("Detected loss to be nan. Terminate training...")
+                break
 
         if return_loss:
             return loss_per_batch
