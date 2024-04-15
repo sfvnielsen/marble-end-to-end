@@ -190,9 +190,8 @@ class DigitalToAnalogConverter(object):
 
         TODO: Quantization added during eval
     """
-    def __init__(self, bwl_cutoff, dac_min_max, fs, bit_resolution=None, bessel_order=5, dtype=torch.float64) -> None:
+    def __init__(self, bwl_cutoff, fs, bit_resolution=None, bessel_order=5, dtype=torch.float64) -> None:
         # Set attributes of DAC
-        self.dac_min_max = dac_min_max  # max-absolute value to be used in the digital signal
         self.bit_resolution = bit_resolution  # FIXME: Not used yet
 
         # Initialize bessel filter
@@ -207,8 +206,8 @@ class DigitalToAnalogConverter(object):
         return self.lpf.get_filters()
 
     def forward(self, x):
-        # Map digital signal to a voltage
-        v = (x + (self.dac_min_max)) / (2 * self.dac_min_max)
+        # Map digital signal to a voltage - dynamic normalization to range [0, 1]
+        v = (x - x.min())/(x.max() - x.min())
 
         # Run lpf
         v_lp = self.lpf.forward(v)
@@ -216,10 +215,10 @@ class DigitalToAnalogConverter(object):
         return v_lp
 
     def eval(self, x):
-        # Map digital signal to a voltage
+        # Map digital signal to a voltage - dynamic normalization to range [0, 1]
         if self.bit_resolution:
             raise NotImplementedError("Quantization is not implemted yet in this module...")
-        v = (x + (self.dac_min_max)) / (2 * self.dac_min_max)
+        v = (x - x.min())/(x.max() - x.min())
 
         print(f"DAC: Power in digital domain: {10.0 * torch.log10(torch.mean(torch.square(v)))}")
 

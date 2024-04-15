@@ -1073,7 +1073,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
 
         # Digital-to-analog (DAC) converter
         self.dac = DigitalToAnalogConverter(bwl_cutoff=info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts,
-                                            bessel_order=5, dac_min_max=np.sum(np.abs(tx_filter_init)) * np.sqrt(np.average(np.square(constellation)) / sps))
+                                            bessel_order=5)
 
         # Analog-to-digial (ADC) converter
         self.adc = AnalogToDigitalConverter(bwl_cutoff=info_bw * adc_bwl_relative_cutoff, fs=1/self.Ts,
