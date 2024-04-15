@@ -68,7 +68,6 @@ def plot_eyediagram(rx_out: npt.ArrayLike, ax: plt.Axes, Ts: float, sps: int, hi
     else:
         ax.plot(t, np.reshape(rx_out, (-1, sps * n_symbol_periods))[discard_n_symbol_periods:-discard_n_symbol_periods:decimation].T, color='crimson', alpha=.1, lw=.5)
         ax.grid(True)
-        ax.set_xlim((np.min(t), np.max(t)))
 
 
 def plot_pole_zero(system_transfer_function: tuple, ax: plt.Axes):
