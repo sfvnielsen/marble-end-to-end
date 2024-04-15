@@ -260,7 +260,7 @@ class LearnableTransmissionSystem(object):
         for pgroup in self.optimizer.param_groups:
             # FIXME: Abusing param groups a bit here.
             # So far each param group corresponds to exatcly one parameter.
-            torch.nn.utils.clip_grad_norm(pgroup['params'], 1.0)  # clip all gradients to unit norm
+            torch.nn.utils.clip_grad_norm_(pgroup['params'], 1.0)  # clip all gradients to unit norm
         
         # Take gradient step.
         self.optimizer.step()

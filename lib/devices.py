@@ -209,6 +209,7 @@ class DigitalToAnalogConverter(object):
     def forward(self, x):
         # Map digital signal to a voltage
         v = (x + (self.dac_min_max)) / (2 * self.dac_min_max)
+        v = v / torch.sqrt(torch.mean(torch.square(v)))  # normalize power
 
         # Run lpf
         v_lp = self.lpf.forward(v)
@@ -220,8 +221,9 @@ class DigitalToAnalogConverter(object):
         if self.bit_resolution:
             raise NotImplementedError("Quantization is not implemted yet in this module...")
         v = (x + (self.dac_min_max)) / (2 * self.dac_min_max)
+        v = v / torch.sqrt(torch.mean(torch.square(v)))  # normalize power
 
-        print(f"DAC: Power in digital domain: {10.0 * torch.log10(torch.mean(torch.square(v)))}")
+        print(f"DAC: Power in digital domain: {10.0 * torch.log10(torch.mean(torch.square(v)))} [dBFS]")
 
         # Run lpf
         v_lp = self.lpf.forward(v)
