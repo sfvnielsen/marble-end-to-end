@@ -38,10 +38,10 @@ if __name__ == "__main__":
     eval_snr_db = 6.0
     mod_order = 4  # PAM
     rrc_rolloff = 0.5  # for initialization
-    learn_tx, tx_filter_length = True, 20
-    learn_rx, rx_filter_length = True, 20
-    dac_bwl_relative_cutoff = 0.75  # low-pass filter cuttoff relative to bandwidth of the baseband signal
-    adc_bwl_relative_cutoff = 0.75
+    learn_tx, tx_filter_length = True, 15
+    learn_rx, rx_filter_length = True, 15
+    dac_bwl_relative_cutoff = 0.9  # low-pass filter cuttoff relative to bandwidth of the baseband signal
+    adc_bwl_relative_cutoff = 0.9
     use_brickwall = False  # use brickwall filter instead of Bessel in the ADC/DAC (Experimental)
     use_1clr = True  # learning rate scheduling of the optimizer
 
@@ -80,9 +80,9 @@ if __name__ == "__main__":
     adc_filter_b, adc_filter_a = None, None
     dac_filter_b, dac_filter_a = None, None
     if adc_bwl_relative_cutoff:
-        adc_filter_b, adc_filter_a = awgn_system.adc.get_lpf_filter()
+        adc_filter_b, adc_filter_a = awgn_system.adc.get_filters()
     if dac_bwl_relative_cutoff:
-        dac_filter_b, dac_filter_a = awgn_system.dac.get_lpf_filter()
+        dac_filter_b, dac_filter_a = awgn_system.dac.get_filters()
 
     # Generate training data
     n_bits = int(np.log2(len(modulation_scheme.constellation)) * n_symbols_train)

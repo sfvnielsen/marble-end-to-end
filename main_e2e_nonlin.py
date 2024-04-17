@@ -38,10 +38,10 @@ if __name__ == "__main__":
     eval_snr_db = train_snr_db
     mod_order = 4  # PAM
     rrc_rolloff = 0.5
-    learn_tx, tx_filter_length = True, 40
-    learn_rx, rx_filter_length = True, 40
-    dac_bwl_relative_cutoff = 0.75  # low-pass filter cuttoff relative to bandwidth of the RRC pulse
-    adc_bwl_relative_cutoff = 0.75
+    learn_tx, tx_filter_length = True, 35
+    learn_rx, rx_filter_length = True, 35
+    dac_bwl_relative_cutoff = 0.9  # low-pass filter cuttoff relative to bandwidth of the RRC pulse
+    adc_bwl_relative_cutoff = 0.9
     use_brickwall = False  # use brickwall filter instead of Bessel in the ADC/DAC (Experimental)
     use_1clr = True  # learning rate scheduling of the optimizer
 

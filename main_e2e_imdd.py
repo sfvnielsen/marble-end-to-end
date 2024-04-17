@@ -38,8 +38,8 @@ if __name__ == "__main__":
     baud_rate = int(100e9)
     mod_order = 4  # PAM
     rrc_rolloff = 0.01
-    learn_tx, tx_filter_length = True, 30
-    learn_rx, rx_filter_length = True, 30
+    learn_tx, tx_filter_length = True, 35
+    learn_rx, rx_filter_length = True, 35
     dac_bwl_relative_cutoff = 0.9  # low-pass filter cuttoff relative to information bandwidth
     adc_bwl_relative_cutoff = 0.9
     use_1clr = True
@@ -50,7 +50,7 @@ if __name__ == "__main__":
         'insertion_loss': 0.0,
         'pp_voltage': 3.0,
         'bias_voltage': -1.5,
-        'laser_power_dbm': -7.0,
+        'laser_power_dbm': -5.0,
         'linear_absorption': True
     }
 

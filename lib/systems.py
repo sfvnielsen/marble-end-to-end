@@ -348,10 +348,10 @@ class BasicAWGN(LearnableTransmissionSystem):
         if learn_tx and tx_filter_init_type != 'rrc':
             tx_filter_init = filter_initialization(tx_filter_init, tx_filter_init_type)
         else:
-             # Construct RRC filter
-            __, g = rrcosfilter(tx_filter_length, rrc_rolloff, self.sym_length, 1 / self.Ts)
+            # Construct RRC filter
+            assert tx_filter_length % 2 == 1  # we assume that pulse is always odd
+            __, g = rrcosfilter(tx_filter_length + 1, rrc_rolloff, self.sym_length, 1 / self.Ts)
             g = g[1::]  # delete first element to make filter odd length
-            assert len(g) % 2 == 1  # we assume that pulse is always odd
             g = g / np.linalg.norm(g)
             tx_filter_init = g
 
@@ -362,10 +362,10 @@ class BasicAWGN(LearnableTransmissionSystem):
         if learn_rx and rx_filter_init_type != 'rrc':
             rx_filter_init = filter_initialization(rx_filter_init, rx_filter_init_type)
         else:
-             # Construct RRC filter
-            __, g = rrcosfilter(rx_filter_length, rrc_rolloff, self.sym_length, 1 / self.Ts)
+            # Construct RRC filter
+            assert rx_filter_length % 2 == 1  # we assume that pulse is always odd
+            __, g = rrcosfilter(rx_filter_length + 1, rrc_rolloff, self.sym_length, 1 / self.Ts)
             g = g[1::]  # delete first element to make filter odd length
-            assert len(g) % 2 == 1  # we assume that pulse is always odd
             g = g / np.linalg.norm(g)
             rx_filter_init = g
 
@@ -520,10 +520,10 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         if learn_tx and tx_filter_init_type != 'rrc':
             tx_filter_init = filter_initialization(tx_filter_init, tx_filter_init_type)
         else:
-             # Construct RRC filter
-            __, g = rrcosfilter(tx_filter_length, rrc_rolloff, self.sym_length, 1 / self.Ts)
+            # Construct RRC filter
+            assert tx_filter_length % 2 == 1  # we assume that pulse is always odd
+            __, g = rrcosfilter(tx_filter_length + 1, rrc_rolloff, self.sym_length, 1 / self.Ts)
             g = g[1::]  # delete first element to make filter odd length
-            assert len(g) % 2 == 1  # we assume that pulse is always odd
             g = g / np.linalg.norm(g)
             tx_filter_init = g
 
@@ -534,10 +534,10 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         if learn_rx and rx_filter_init_type != 'rrc':
             rx_filter_init = filter_initialization(rx_filter_init, rx_filter_init_type)
         else:
-             # Construct RRC filter
-            __, g = rrcosfilter(rx_filter_length, rrc_rolloff, self.sym_length, 1 / self.Ts)
+            # Construct RRC filter
+            assert rx_filter_length % 2 == 1  # we assume that pulse is always odd
+            __, g = rrcosfilter(rx_filter_length + 1, rrc_rolloff, self.sym_length, 1 / self.Ts)
             g = g[1::]  # delete first element to make filter odd length
-            assert len(g) % 2 == 1  # we assume that pulse is always odd
             g = g / np.linalg.norm(g)
             rx_filter_init = g
 
@@ -761,10 +761,10 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
         if learn_tx and tx_filter_init_type != 'rrc':
             tx_filter_init = filter_initialization(tx_filter_init, tx_filter_init_type)
         else:
-             # Construct RRC filter
-            __, g = rrcosfilter(tx_filter_length, rrc_rolloff, self.sym_length, 1 / self.Ts)
+            # Construct RRC filter
+            assert tx_filter_length % 2 == 1  # we assume that pulse is always odd
+            __, g = rrcosfilter(tx_filter_length + 1, rrc_rolloff, self.sym_length, 1 / self.Ts)
             g = g[1::]  # delete first element to make filter odd length
-            assert len(g) % 2 == 1  # we assume that pulse is always odd
             g = g / np.linalg.norm(g)
             tx_filter_init = g
 
@@ -775,10 +775,10 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
         if learn_rx and rx_filter_init_type != 'rrc':
             rx_filter_init = filter_initialization(rx_filter_init, rx_filter_init_type)
         else:
-             # Construct RRC filter
-            __, g = rrcosfilter(rx_filter_length, rrc_rolloff, self.sym_length, 1 / self.Ts)
+            # Construct RRC filter
+            assert rx_filter_length % 2 == 1  # we assume that pulse is always odd
+            __, g = rrcosfilter(rx_filter_length + 1, rrc_rolloff, self.sym_length, 1 / self.Ts)
             g = g[1::]  # delete first element to make filter odd length
-            assert len(g) % 2 == 1  # we assume that pulse is always odd
             g = g / np.linalg.norm(g)
             rx_filter_init = g
 
@@ -1045,10 +1045,10 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         if learn_tx and tx_filter_init_type != 'rrc':
             tx_filter_init = filter_initialization(tx_filter_init, tx_filter_init_type)
         else:
-             # Construct RRC filter
-            __, g = rrcosfilter(tx_filter_length, rrc_rolloff, self.sym_length, 1 / self.Ts)
+            # Construct RRC filter
+            assert tx_filter_length % 2 == 1  # we assume that pulse is always odd
+            __, g = rrcosfilter(tx_filter_length + 1, rrc_rolloff, self.sym_length, 1 / self.Ts)
             g = g[1::]  # delete first element to make filter odd length
-            assert len(g) % 2 == 1  # we assume that pulse is always odd
             g = g / np.linalg.norm(g)
             tx_filter_init = g
 
@@ -1059,10 +1059,10 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         if learn_rx and rx_filter_init_type != 'rrc':
             rx_filter_init = filter_initialization(rx_filter_init, rx_filter_init_type)
         else:
-             # Construct RRC filter
-            __, g = rrcosfilter(rx_filter_length, rrc_rolloff, self.sym_length, 1 / self.Ts)
+            # Construct RRC filter
+            assert rx_filter_length % 2 == 1  # we assume that pulse is always odd
+            __, g = rrcosfilter(rx_filter_length + 1, rrc_rolloff, self.sym_length, 1 / self.Ts)
             g = g[1::]  # delete first element to make filter odd length
-            assert len(g) % 2 == 1  # we assume that pulse is always odd
             g = g / np.linalg.norm(g)
             rx_filter_init = g
 
