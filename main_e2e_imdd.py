@@ -31,27 +31,27 @@ FIGPREFIX = 'e2e_imdd'
 
 if __name__ == "__main__":
     # Define simulation parameters
-    save_figures = False
+    save_figures = True
     n_symbols_train = int(1e6)
     n_symbols_val = int(1e6)  # number of symbols used for SER calculation
     samples_per_symbol = 4
     baud_rate = int(100e9)
     mod_order = 4  # PAM
     rrc_rolloff = 0.01
-    learn_tx, tx_filter_length = True, 35
-    learn_rx, rx_filter_length = True, 35
+    learn_tx, tx_filter_length = True, 25
+    learn_rx, rx_filter_length = True, 25
     dac_bwl_relative_cutoff = 0.9  # low-pass filter cuttoff relative to information bandwidth
     adc_bwl_relative_cutoff = 0.9
     use_1clr = True
 
     # Configuration of electro absorption modulator
-    ideal_modulator = True
+    ideal_modulator = False
     eam_config = {
         'insertion_loss': 0.0,
-        'pp_voltage': 3.0,
+        'pp_voltage': 2.0,
         'bias_voltage': -1.5,
-        'laser_power_dbm': -5.0,
-        'linear_absorption': True
+        'laser_power_dbm': -10.0,
+        'linear_absorption': False
     }
 
     # Channel configuration - single model fiber

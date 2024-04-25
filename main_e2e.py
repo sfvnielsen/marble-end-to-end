@@ -11,7 +11,7 @@ from scipy.signal import lfilter
 
 from lib.utility import calc_ser_pam, calc_theory_ser_pam
 from lib.systems import BasicAWGNwithBWL, MatchedFilterAWGNwithBWL
-from lib.plotting import plot_bar, plot_fft_filter_response, plot_fft_ab_response, plot_pole_zero
+from lib.plotting import plot_bar, plot_fft_filter_response, plot_fft_ab_response, plot_pole_zero, plot_fft
 
 font = {'family': 'Helvetica',
         'weight': 'normal',
@@ -22,7 +22,7 @@ text = {'usetex': True}
 mpl.rc('font', **font)
 mpl.rc('text', **text)
 
-FIGSIZE = (12.5, 7.5)
+FIGSIZE = (8.0, 4.0)
 DPI = 150
 FIGURE_DIR = 'figures'
 FIGPREFIX = 'e2e'
@@ -37,7 +37,7 @@ if __name__ == "__main__":
     train_snr_db = 12.0  # SNR (EsN0) at which the training is done
     eval_snr_db = 6.0
     mod_order = 4  # PAM
-    rrc_rolloff = 0.5  # for initialization
+    rrc_rolloff = 0.01  # for initialization
     learn_tx, tx_filter_length = True, 15
     learn_rx, rx_filter_length = True, 15
     dac_bwl_relative_cutoff = 0.9  # low-pass filter cuttoff relative to bandwidth of the baseband signal
@@ -98,26 +98,34 @@ if __name__ == "__main__":
     bit_sequence = random_obj.integers(0, 2, size=n_bits)
     a = modulation_scheme.modulate(bit_sequence)
     awgn_system.set_esn0_db(eval_snr_db)
-    ahat = awgn_system.evaluate(a)
+    y_rx = awgn_system.evaluate(a, decimate=False)
+    ahat = y_rx[0::samples_per_symbol]
     ser, delay = calc_ser_pam(ahat, a, discard=100)
     print(f"SER: {ser} (delay: {delay})")
 
-    # Compare to standard non-optimized matched filtering
-    rrc_pulse_length_in_syms = 16
-    awgn_mf_system = MatchedFilterAWGNwithBWL(sps=samples_per_symbol, esn0_db=eval_snr_db, baud_rate=baud_rate,
+    # Plot signal PSD after Rx filter
+    fig, ax = plt.subplots()
+    plot_fft(y_rx, ax=ax, Ts=awgn_system.Ts)
+    ymin, ymax = ax.get_ylim()
+    ax.vlines([-baud_rate/2, baud_rate/2], ymin, ymax, 'k')
+    ax.set_title('PSD of signal after matched filter')
+
+    # Compare to standard non-optimized RRC
+    rrc_pulse_length_in_syms = tx_filter_length // samples_per_symbol + 1
+    awgn_rrc_system = MatchedFilterAWGNwithBWL(sps=samples_per_symbol, esn0_db=eval_snr_db, baud_rate=baud_rate,
                                               constellation=modulation_scheme.constellation,
                                               rrc_length_in_symbols=rrc_pulse_length_in_syms, rrc_rolloff=rrc_rolloff,
                                               adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                                               dac_bwl_relative_cutoff=dac_bwl_relative_cutoff)
-    ahat_mf = awgn_mf_system.evaluate(a)
+    ahat_mf = awgn_rrc_system.evaluate(a)
     ser_mf, delay_mf = calc_ser_pam(ahat_mf, a, discard=100)
-    print(f"SER (Matched filter): {ser_mf} (delay: {delay_mf})")
+    print(f"SER (RRC): {ser_mf} (delay: {delay_mf})")
 
     # Plot learned filters vs. matched
     filter_amp_min_db = -80.0
-    fig, ax = plt.subplots(nrows=2, ncols=3, figsize=(20, 12.5))
-    for sys, label in zip([awgn_system, awgn_mf_system],
-                   ['E2E', 'Matched']):
+    fig, ax = plt.subplots(nrows=2, ncols=3, figsize=(12.5, 7.5))
+    for sys, label in zip([awgn_system, awgn_rrc_system],
+                   ['E2E', 'RRC']):
         txfilt = sys.get_pulse_shaping_filter()
         rxfilt = sys.get_rx_filter()
 
@@ -150,7 +158,7 @@ if __name__ == "__main__":
     ax[0, 0].set_ylabel('Time domain')
     ax[1, 0].set_ylabel('Fq domain')
     ax[0, 0].set_title('Pulse Shaping (learned)' if learn_tx else 'Pulse Shaping')
-    ax[0, 1].set_title('Rx filter (learned)' if learn_rx else 'Rx filter')
+    ax[0, 1].set_title('Matched filter (learned)' if learn_rx else 'Matched filter')
     ax[0, 2].set_title('Total response (including LPF)')
     ax[1, 0].legend(loc='lower center')
     ax[1, 1].legend(loc='lower center')
@@ -165,8 +173,9 @@ if __name__ == "__main__":
 
 
     # Plot the pole-zero plot of the system response up until before the Tx filter
-    fig, ax = plt.subplots(figsize=FIGSIZE)
-    total_response_b = np.copy(txfilt)
+    fig, axs = plt.subplots(figsize=FIGSIZE, ncols=3)
+    tx_filter = awgn_system.get_pulse_shaping_filter()
+    total_response_b = np.copy(tx_filter)
     total_response_a = [1]
     if dac_bwl_relative_cutoff:
         total_response_b = np.polymul(dac_filter_b, total_response_b)
@@ -175,15 +184,25 @@ if __name__ == "__main__":
         total_response_b = np.polymul(adc_filter_b, total_response_b)
         total_response_a = np.polymul(adc_filter_a, total_response_a)
     
-    plot_pole_zero((total_response_b, total_response_a), ax)
-    ax.set_xlabel('Real(z)')
-    ax.set_ylabel('Imag(z)')
-    ax.set_title('Pole-zero plot of system transfer function \n (without Rx filter)')
+    plot_pole_zero((tx_filter, 1), axs[0])
+    axs[0].set_title(f'Tx filter (len={len(tx_filter)})')
+    axs[0].set_ylabel('Imag(z)')
+
+    plot_pole_zero((dac_filter_b, dac_filter_a), axs[1])
+    axs[1].set_title(f'Bessel filter (order={len(dac_filter_b)})')
+
+    plot_pole_zero((total_response_b, total_response_a), axs[2])
+    axs[2].set_title('System response (without Rx)')
+
+    for ax in axs:
+        ax.set_xlabel('Real(z)')
+
+    fig.suptitle('Pole-zero plots')
+    plt.tight_layout()
 
     if save_figures:
         fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_system_response_pole_zero.eps"), format='eps')
         fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_system_response_pole_zero.png"), dpi=DPI)
-
 
     # Plot distribution of symbols
     fig, ax = plt.subplots(figsize=FIGSIZE)
