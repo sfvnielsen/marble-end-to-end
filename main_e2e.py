@@ -7,10 +7,11 @@ import komm
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-from scipy.signal import lfilter
+from scipy.signal import lfilter, freqz
+from scipy.fft import fftshift
 
 from lib.utility import calc_ser_pam, calc_theory_ser_pam
-from lib.systems import BasicAWGNwithBWL, MatchedFilterAWGNwithBWL
+from lib.systems import BasicAWGNwithBWL, LinearFFEAWGNwithBWL
 from lib.plotting import plot_bar, plot_fft_filter_response, plot_fft_ab_response, plot_pole_zero, plot_fft
 
 font = {'family': 'Helvetica',
@@ -38,12 +39,12 @@ if __name__ == "__main__":
     eval_snr_db = 6.0
     mod_order = 4  # PAM
     rrc_rolloff = 0.01  # for initialization
-    learn_tx, tx_filter_length = True, 15
-    learn_rx, rx_filter_length = True, 15
+    learn_tx, tx_filter_length = True, 35
+    learn_rx, rx_filter_length = True, 35
     dac_bwl_relative_cutoff = 0.9  # low-pass filter cuttoff relative to bandwidth of the baseband signal
     adc_bwl_relative_cutoff = 0.9
-    use_brickwall = False  # use brickwall filter instead of Bessel in the ADC/DAC (Experimental)
     use_1clr = True  # learning rate scheduling of the optimizer
+    use_brickwall = False
 
     figtitles = 'pulseshaping' if learn_tx else 'rxfilt'
     if learn_tx and learn_rx:
@@ -87,20 +88,20 @@ if __name__ == "__main__":
     # Generate training data
     n_bits = int(np.log2(len(modulation_scheme.constellation)) * n_symbols_train)
     bit_sequence = random_obj.integers(0, 2, size=n_bits)
-    a = modulation_scheme.modulate(bit_sequence)
+    a_train = modulation_scheme.modulate(bit_sequence)
 
     # Fit
     if learn_tx or learn_rx:
-        awgn_system.optimize(a)
+        awgn_system.optimize(a_train)
 
     # Generate validation data and caclulate SER on that with learned filters
     n_bits = int(np.log2(len(modulation_scheme.constellation)) * n_symbols_val)
     bit_sequence = random_obj.integers(0, 2, size=n_bits)
-    a = modulation_scheme.modulate(bit_sequence)
+    a_val = modulation_scheme.modulate(bit_sequence)
     awgn_system.set_esn0_db(eval_snr_db)
-    y_rx = awgn_system.evaluate(a, decimate=False)
+    y_rx = awgn_system.evaluate(a_val, decimate=False)
     ahat = y_rx[0::samples_per_symbol]
-    ser, delay = calc_ser_pam(ahat, a, discard=100)
+    ser, delay = calc_ser_pam(ahat, a_val, discard=100)
     print(f"SER: {ser} (delay: {delay})")
 
     # Plot signal PSD after Rx filter
@@ -110,32 +111,51 @@ if __name__ == "__main__":
     ax.vlines([-baud_rate/2, baud_rate/2], ymin, ymax, 'k')
     ax.set_title('PSD of signal after matched filter')
 
-    # Compare to standard non-optimized RRC
+    # Compare to standard non-optimized RRC + equalizer
     rrc_pulse_length_in_syms = tx_filter_length // samples_per_symbol + 1
-    awgn_rrc_system = MatchedFilterAWGNwithBWL(sps=samples_per_symbol, esn0_db=eval_snr_db, baud_rate=baud_rate,
-                                              constellation=modulation_scheme.constellation,
-                                              rrc_length_in_symbols=rrc_pulse_length_in_syms, rrc_rolloff=rrc_rolloff,
-                                              adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
-                                              dac_bwl_relative_cutoff=dac_bwl_relative_cutoff)
-    ahat_mf = awgn_rrc_system.evaluate(a)
-    ser_mf, delay_mf = calc_ser_pam(ahat_mf, a, discard=100)
-    print(f"SER (RRC): {ser_mf} (delay: {delay_mf})")
+    awgn_ffe_system = LinearFFEAWGNwithBWL(sps=samples_per_symbol, esn0_db=train_snr_db, baud_rate=baud_rate,
+                                           learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
+                                           ffe_n_taps=35, rrc_rolloff=rrc_rolloff,
+                                           tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr, use_brickwall=use_brickwall,
+                                           adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
+                                           tx_filter_init_type='rrc', rx_filter_init_type='rrc')
+    
+    awgn_ffe_system.initialize_optimizer()
+    awgn_ffe_system.optimize(a_train)
+    awgn_ffe_system.set_esn0_db(eval_snr_db)
+    ahat_ffe = awgn_ffe_system.evaluate(a_val)
+    ser_ffe, delay_ffe = calc_ser_pam(ahat_ffe, a_val, discard=100)
+    print(f"SER (FFE): {ser_ffe} (delay: {delay_ffe})")
 
     # Plot learned filters vs. matched
     filter_amp_min_db = -80.0
+    n_fft = 512 * samples_per_symbol
     fig, ax = plt.subplots(nrows=2, ncols=3, figsize=(12.5, 7.5))
-    for sys, label in zip([awgn_system, awgn_rrc_system],
-                   ['E2E', 'RRC']):
+    for sys, label in zip([awgn_system, awgn_ffe_system],
+                   ['E2E', 'RRC+FFE']):
         txfilt = sys.get_pulse_shaping_filter()
         rxfilt = sys.get_rx_filter()
 
         # Calculate the total response of the system (includuing LPFs)
         total_response = np.copy(txfilt)
+        f, total_response_fq = freqz(txfilt, 1, worN=n_fft, whole=True, fs=1/sys.Ts)
         if dac_bwl_relative_cutoff:
             total_response = lfilter(dac_filter_b, dac_filter_a, total_response)
+            _, Hfq = freqz(dac_filter_b, dac_filter_a, worN=n_fft, whole=True, fs=1/sys.Ts)
+            total_response_fq  = total_response_fq * Hfq
         if adc_bwl_relative_cutoff:
             total_response = lfilter(adc_filter_b, adc_filter_a, total_response)
+            _, Hfq = freqz(dac_filter_b, dac_filter_a, worN=n_fft, whole=True, fs=1/sys.Ts)
+            total_response_fq  = total_response_fq * Hfq
         total_response = np.convolve(total_response, rxfilt)
+        _, Hfq = freqz(rxfilt, 1, worN=n_fft, whole=True, fs=1/sys.Ts)
+        total_response_fq = total_response_fq * Hfq
+
+        if 'FFE' in label:
+            heq = sys.equaliser.filter.get_filter()
+            total_response = np.convolve(total_response, heq)
+            _, Hfq = freqz(heq, 1, worN=n_fft, whole=True, fs=1/sys.Ts)
+            total_response_fq *= Hfq
 
         # First row - time domain
         ax[0, 0].plot(txfilt, '--', label=label)
@@ -145,7 +165,8 @@ if __name__ == "__main__":
         # Second row - frequency domain
         plot_fft_filter_response(txfilt, ax[1, 0], Ts=sys.Ts, plot_label=label)
         plot_fft_filter_response(rxfilt, ax[1, 1], Ts=sys.Ts, plot_label=label)
-        plot_fft_filter_response(total_response, ax[1, 2], Ts=sys.Ts, plot_label=label)
+        fqs_freqz = np.arange(-len(f)//2, len(f)//2) / (len(f) * sys.Ts)
+        ax[1, 2].plot(fqs_freqz, 20.0 * np.log10(np.absolute(fftshift(total_response_fq))), label=label)
 
     # Plot the ADC/DAC LPF filters on top of respective Tx and Rx
     if dac_bwl_relative_cutoff:
@@ -163,9 +184,9 @@ if __name__ == "__main__":
     ax[1, 0].legend(loc='lower center')
     ax[1, 1].legend(loc='lower center')
     for i in range(3):
-        __, ymax = ax[1, i].get_ylim()
-        ax[1, i].set_ylim(filter_amp_min_db, ymax)
+        ax[1, i].set_ylim(ymin=filter_amp_min_db)
 
+    ax[1, 2].grid(True)
     plt.tight_layout()
     if save_figures:
         fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_system_response.eps"), format='eps')
@@ -211,13 +232,13 @@ if __name__ == "__main__":
     # Calc theory SER
     esn0_db = awgn_system.get_esn0_db()
     ser_theory = calc_theory_ser_pam(mod_order, esn0_db)
-    ser_mf_conf = 1.96 * np.sqrt((ser_mf * (1 - ser_mf) / (n_symbols_val)))
+    ser_mf_conf = 1.96 * np.sqrt((ser_ffe * (1 - ser_ffe) / (n_symbols_val)))
     print(f"Theoretical SER: {ser_theory} (EsN0: {esn0_db:.3f} [dB])")
     print(f"95pct confidence (+-) {ser_mf_conf}")
 
     fig, ax = plt.subplots(figsize=FIGSIZE)
     plot_bar(['E2E', 'Matched filter', 'Theory'],
-             [np.log10(x) for x in [ser, ser_mf, ser_theory]],
+             [np.log10(x) for x in [ser, ser_ffe, ser_theory]],
              ax)
 
     plt.show()

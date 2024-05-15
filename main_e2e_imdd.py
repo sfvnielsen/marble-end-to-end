@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from scipy.signal import lfilter
 
 from lib.utility import calc_ser_pam, calc_theory_ser_pam
-from lib.systems import IntensityModulationChannel
+from lib.systems import IntensityModulationChannel, LinearFFEIM
 from lib.plotting import plot_bar, plot_fft_filter_response, plot_fft_ab_response, plot_eyediagram
 
 font = {'family': 'Helvetica',
@@ -116,11 +116,11 @@ if __name__ == "__main__":
     # Generate training data
     n_bits = int(np.log2(len(modulation_scheme.constellation)) * n_symbols_train)
     bit_sequence = random_obj.integers(0, 2, size=n_bits)
-    a = modulation_scheme.modulate(bit_sequence)
+    a_train = modulation_scheme.modulate(bit_sequence)
 
     # Fit
     if learn_tx or learn_rx:
-        imdd_system.optimize(a)
+        imdd_system.optimize(a_train)
 
     # Generate validation data and caclulate SER on that with learned filters
     n_bits = int(np.log2(len(modulation_scheme.constellation)) * n_symbols_val)
@@ -131,11 +131,27 @@ if __name__ == "__main__":
     ser, delay = calc_ser_pam(ahat, a, discard=100)
     print(f"SER: {ser} (delay: {delay})")
 
+    # Run comparison method - RRC + RRC + FFE
+    imdd_system_ffe = LinearFFEIM(sps=samples_per_symbol, baud_rate=baud_rate,
+                                  learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
+                                  rrc_rolloff=rrc_rolloff, ffe_n_taps=25,
+                                  tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
+                                  adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
+                                  tx_filter_init_type='rrc', rx_filter_init_type='rrc',
+                                  smf_config=smf_config, photodiode_config=photodiode_config, eam_config=eam_config,
+                                  ideal_modulator=ideal_modulator)
+
+    imdd_system_ffe.initialize_optimizer()
+    imdd_system_ffe.optimize(a_train)
+    rx_out_ffe = imdd_system_ffe.evaluate(a)
+    ser_ffe, delay_ffe = calc_ser_pam(rx_out_ffe, a, discard=100)
+    print(f"SER (FFE): {ser_ffe} (delay: {delay_ffe})")
+
     # Plot learned filters vs. matched
     filter_amp_min_db = -40.0
     fig, ax = plt.subplots(nrows=2, ncols=3, figsize=(20, 12.5))
-    for sys, label in zip([imdd_system],
-                          ['E2E']):
+    for sys, label in zip([imdd_system, imdd_system_ffe],
+                          ['E2E', 'RRC+FFE']):
         txfilt = sys.get_pulse_shaping_filter()
         rxfilt = sys.get_rx_filter()
 

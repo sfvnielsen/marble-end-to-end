@@ -11,9 +11,10 @@ from scipy.fft import fftshift
 from commpy.filters import rrcosfilter
 
 from .filtering import FIRfilter, BesselFilter, BrickWallFilter, AllPassFilter, filter_initialization
-from .utility import find_max_variance_sample
+from .utility import find_max_variance_sample, symbol_sync
 from .devices import ElectroAbsorptionModulator, Photodiode, IdealLinearModulator, DigitalToAnalogConverter, AnalogToDigitalConverter
 from .channels import SingleModeFiber
+from .equalization import LinearFeedForwardEqualiser
 
 # TODO: Implement GPU support
 
@@ -252,16 +253,16 @@ class LearnableTransmissionSystem(object):
 
     def update_model(self, loss):
         loss.backward()
-    
+
         if not self.optimizer:
             raise Exception("Optimizer was not initialized. Please call the 'initialize_optimizer' method before proceeding to optimize.")
-        
+
         # Gradient norm clipping
         for pgroup in self.optimizer.param_groups:
             # FIXME: Abusing param groups a bit here.
             # So far each param group corresponds to exatcly one parameter.
             torch.nn.utils.clip_grad_norm_(pgroup['params'], 1.0)  # clip all gradients to unit norm
-        
+
         # Take gradient step.
         self.optimizer.step()
 
@@ -307,7 +308,7 @@ class LearnableTransmissionSystem(object):
 
             if return_loss:
                 loss_per_batch[b] = loss.item()
-            
+
             if torch.isnan(loss):
                 print("Detected loss to be nan. Terminate training...")
                 break
@@ -502,7 +503,7 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
     """
     def __init__(self, sps, esn0_db, baud_rate, learning_rate, batch_size, constellation,
                  tx_filter_length: int, rx_filter_length: int, adc_bwl_relative_cutoff,
-                 dac_bwl_relative_cutoff, learn_tx: bool, learn_rx: bool,
+                 dac_bwl_relative_cutoff, learn_tx: bool, learn_rx: bool, equaliser_config: dict | None = None,
                  tx_filter_init_type='dirac', rx_filter_init_type='dirac',
                  print_interval=int(5e4), use_brickwall=False, use_1clr=False,
                  rrc_rolloff=0.5) -> None:
@@ -541,7 +542,15 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
             g = g / np.linalg.norm(g)
             rx_filter_init = g
 
-        self.rx_filter = FIRfilter(filter_weights=rx_filter_init, trainable=learn_rx, stride=self.sps)
+        # Check if we equalization has been specified - if we do, do not downsample after rx filter
+        self.use_eq = bool(equaliser_config)
+        self.rx_filter = FIRfilter(filter_weights=rx_filter_init, trainable=learn_rx, stride=1 if self.use_eq else self.sps)
+
+        # Define equaliser object
+        self.equaliser = AllPassFilter()
+        if self.use_eq:
+            self.equaliser = LinearFeedForwardEqualiser(samples_per_symbol=self.sps, dtype=torch.float64,  # FIXME: !
+                                                        **equaliser_config)
 
         # Define bandwidth limitation filters - low pass filter with cutoff relative to bandwidth of baseband
         info_bw = 0.5 * baud_rate
@@ -579,11 +588,14 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         params_to_return = []
         params_to_return.append({"params": self.pulse_shaper.parameters()})
         params_to_return.append({"params": self.rx_filter.parameters()})
+        if self.use_eq:
+            params_to_return += self.equaliser.get_parameters()
         return params_to_return
 
     def zero_gradients(self):
         self.pulse_shaper.zero_grad()
         self.rx_filter.zero_grad()
+        self.equaliser.zero_grad()
 
     def forward(self, symbols_up: torch.TensorType):
         # Input is assumed to be upsampled sybmols
@@ -607,10 +619,13 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         # Apply rx filter
         rx_filter_out = self.rx_filter.forward(y_lp)
 
-        # Power normalize and rescale to constellation
-        rx_filter_out = rx_filter_out / torch.sqrt(torch.mean(torch.square(rx_filter_out))) * self.constellation_scale
+        # Apply equaliser
+        eq_out = self.equaliser.forward(rx_filter_out)
 
-        return rx_filter_out
+        # Power normalize and rescale to constellation
+        eq_out = eq_out / torch.sqrt(torch.mean(torch.square(eq_out))) * self.constellation_scale
+
+        return eq_out
 
     def _eval(self, symbols_up: torch.TensorType, batch_size: int, decimate: bool = True):
         # Input is assumed to be upsampled sybmols
@@ -635,10 +650,15 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
             self.rx_filter.set_stride(1)  # output all samples from rx_filter
         rx_filter_out = self.rx_filter.forward_batched(y_lp, batch_size)
 
-        # Power normalize and rescale to constellation
-        rx_filter_out = rx_filter_out / torch.sqrt(torch.mean(torch.square(rx_filter_out))) * self.constellation_scale
+        # Apply equaliser
+        if not decimate and self.use_eq:
+            self.equaliser.set_stride(1)  # output all samples from equaliser
+        rx_eq_out = self.equaliser.forward_batched(rx_filter_out, batch_size)
 
-        return rx_filter_out
+        # Power normalize and rescale to constellation
+        rx_eq_out = rx_eq_out / torch.sqrt(torch.mean(torch.square(rx_eq_out))) * self.constellation_scale
+
+        return rx_eq_out
 
     def calculate_loss(self, tx_syms: torch.TensorType, rx_syms: torch.TensorType):
         return torch.mean(torch.square(tx_syms[self.discard_per_batch:-self.discard_per_batch] - torch.roll(rx_syms, -self.channel_delay)[self.discard_per_batch:-self.discard_per_batch]))
@@ -730,6 +750,33 @@ class JointTxRxAWGNwithBWL(BasicAWGNwithBWL):
                          use_brickwall=use_brickwall,
                          use_1clr=use_1clr)
 
+
+class LinearFFEAWGNwithBWL(BasicAWGNwithBWL):
+    """
+       Bandwidth limited AWGN channel with fixed Tx and Rx filters.
+       Adaptive FFE equaliser to combat ISI.
+    """
+    def __init__(self, sps, esn0_db, baud_rate, constellation, batch_size, learning_rate,
+                 rx_filter_length, tx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
+                 ffe_n_taps, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 print_interval=int(5e4), rrc_rolloff=0.5,
+                 use_brickwall=False, use_1clr=False) -> None:
+        super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
+                         adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
+                         learning_rate=learning_rate,
+                         batch_size=batch_size,
+                         constellation=constellation,
+                         equaliser_config={'n_taps': ffe_n_taps},
+                         learn_tx=False, learn_rx=False,
+                         tx_filter_length=tx_filter_length,
+                         tx_filter_init_type=tx_filter_init_type,
+                         rx_filter_length=rx_filter_length,
+                         rx_filter_init_type=rx_filter_init_type,
+                         print_interval=print_interval,
+                         rrc_rolloff=rrc_rolloff,
+                         use_brickwall=use_brickwall,
+                         use_1clr=use_1clr)
 
 class NonLinearISIChannel(LearnableTransmissionSystem):
     """
@@ -1030,11 +1077,11 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
 
     """
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
-                 learn_rx, learn_tx, rx_filter_length, tx_filter_length, 
+                 learn_rx, learn_tx, rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, eam_config: dict,
-                 ideal_modulator=False,
+                 ideal_modulator=False, equaliser_config: dict | None = None,
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5, 
+                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
         super().__init__(sps=sps, esn0_db=np.nan, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
@@ -1066,7 +1113,15 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
             g = g / np.linalg.norm(g)
             rx_filter_init = g
 
-        self.rx_filter = FIRfilter(filter_weights=rx_filter_init, trainable=learn_rx, stride=self.sps)
+        # Check if we equalization has been specified - if we do, do not downsample after rx filter
+        self.use_eq = bool(equaliser_config)
+        self.rx_filter = FIRfilter(filter_weights=rx_filter_init, trainable=learn_rx, stride=1 if self.use_eq else self.sps)
+
+        # Define equaliser object
+        self.equaliser = AllPassFilter()
+        if self.use_eq:
+            self.equaliser = LinearFeedForwardEqualiser(samples_per_symbol=self.sps, dtype=torch.float64,  # FIXME: !
+                                                        **equaliser_config)
 
         # Define bandwidth limitation filters - low pass filter with cutoff relative to bw of baseband
         info_bw = 0.5 * baud_rate
@@ -1112,7 +1167,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
             return np.nan
 
         return (10.0 * np.log10(self.Es / self.photodiode.get_thermal_noise_std()**2)).item()
-    
+
     def get_launch_power_dbm(self):
         return self.modulator.get_launch_power_dbm().item()
 
@@ -1122,7 +1177,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
     def set_esn0_db(self, new_esn0_db):
         raise Exception(f"Cannot set EsN0 in this type of channel. Noise is given. Modify v_pp or eam laser power instead.")
 
-    def set_energy_pr_symbol(self, es):        
+    def set_energy_pr_symbol(self, es):
         # Converting average energy pr. symbol into base power (cf. https://wirelesspi.com/pulse-amplitude-modulation-pam/)
         self.Es = es * (3 / (len(self.constellation)**2 - 1))
 
@@ -1130,6 +1185,8 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         params_to_return = []
         params_to_return.append({"params": self.pulse_shaper.parameters()})
         params_to_return.append({"params": self.rx_filter.parameters()})
+        if self.use_eq:
+            params_to_return += self.equaliser.get_parameters()
         return params_to_return
 
     def zero_gradients(self):
@@ -1159,13 +1216,17 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         # Normalize
         y_norm = (y_lp - y_lp.mean()) / (y_lp.std())
 
-        # Apply rx filter - applies stride inside filter (outputs sps = 1)
+        # Apply rx filter - applies stride inside filter (outputs sps = 1) 
+        # (if equaliser is not specified)
         rx_filter_out = self.rx_filter.forward(y_norm)
 
-        # Power normalize and rescale to constellation
-        rx_filter_out = rx_filter_out / torch.sqrt(torch.mean(torch.square(rx_filter_out))) * self.constellation_scale
+        # Apply equaliser
+        rx_eq_out = self.equaliser.forward(rx_filter_out)
 
-        return rx_filter_out
+        # Power normalize and rescale to constellation
+        rx_eq_out = rx_eq_out / torch.sqrt(torch.mean(torch.square(rx_eq_out))) * self.constellation_scale
+
+        return rx_eq_out
 
     def _eval(self, symbols_up: torch.TensorType, batch_size: int, decimate: bool = True):
         # Input is assumed to be upsampled sybmols
@@ -1199,10 +1260,15 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
             self.rx_filter.set_stride(1)  # output all samples from rx_filter
         rx_filter_out = self.rx_filter.forward_batched(y_norm, batch_size)
 
-        # Power normalize and rescale to constellation
-        rx_filter_out = rx_filter_out / torch.sqrt(torch.mean(torch.square(rx_filter_out))) * self.constellation_scale
+        # Apply equaliser
+        if not decimate and self.use_eq:
+            self.equaliser.set_stride(1)  # output all samples from equaliser
+        rx_eq_out = self.equaliser.forward_batched(rx_filter_out, batch_size)
 
-        return rx_filter_out
+        # Power normalize and rescale to constellation
+        rx_eq_out = rx_eq_out / torch.sqrt(torch.mean(torch.square(rx_eq_out))) * self.constellation_scale
+
+        return rx_eq_out
 
     def calculate_loss(self, tx_syms: torch.TensorType, rx_syms: torch.TensorType):
         # NB! Rx sequence is coarsely aligned to the tx-symbol sequence based on a apriori known channel delay.
@@ -1229,7 +1295,7 @@ class PulseShapingIM(IntensityModulationChannel):
                  rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, eam_config: dict,
                  ideal_modulator=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5, 
+                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
@@ -1251,7 +1317,7 @@ class RxFilteringIM(IntensityModulationChannel):
                  rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, eam_config: dict,
                  ideal_modulator=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5, 
+                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
@@ -1271,13 +1337,35 @@ class JointTxRxIM(IntensityModulationChannel):
                  rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, eam_config: dict,
                  ideal_modulator=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5, 
+                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
                          smf_config=smf_config, photodiode_config=photodiode_config, eam_config=eam_config,
                          ideal_modulator=ideal_modulator,
                          learn_rx=True, learn_tx=True, rx_filter_length=rx_filter_length,
+                         tx_filter_length=tx_filter_length,
+                         rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
+                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         rrc_rolloff=rrc_rolloff, use_1clr=use_1clr, eval_batch_size_in_syms=eval_batch_size_in_syms,
+                         print_interval=print_interval)
+
+
+class LinearFFEIM(IntensityModulationChannel):
+    """
+        RRC + Matched filter + Linear FFE in the (Liang and Kahn, 2023) IM/DD system
+    """
+    def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
+                 rx_filter_length, tx_filter_length, ffe_n_taps,
+                 smf_config: dict, photodiode_config: dict, eam_config: dict,
+                 ideal_modulator=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
+                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
+        super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
+                         batch_size=batch_size, constellation=constellation,
+                         smf_config=smf_config, photodiode_config=photodiode_config, eam_config=eam_config,
+                         ideal_modulator=ideal_modulator, equaliser_config={'n_taps': ffe_n_taps},
+                         learn_rx=False, learn_tx=False, rx_filter_length=rx_filter_length,
                          tx_filter_length=tx_filter_length,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
