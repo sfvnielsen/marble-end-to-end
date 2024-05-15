@@ -1082,6 +1082,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
                  ideal_modulator=False, equaliser_config: dict | None = None,
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
+                 dac_bitres=None, adc_bitres=None,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
         super().__init__(sps=sps, esn0_db=np.nan, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
@@ -1128,11 +1129,12 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
 
         # Digital-to-analog (DAC) converter
         self.dac = DigitalToAnalogConverter(bwl_cutoff=info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts,
-                                            bessel_order=5, dac_min_max=np.sum(np.abs(tx_filter_init)) * np.sqrt(np.average(np.square(constellation)) / sps))
+                                            bessel_order=5, dac_min_max=np.sum(np.abs(tx_filter_init)) * np.sqrt(np.average(np.square(constellation)) / sps),
+                                            bit_resolution=dac_bitres)
 
         # Analog-to-digial (ADC) converter
         self.adc = AnalogToDigitalConverter(bwl_cutoff=info_bw * adc_bwl_relative_cutoff, fs=1/self.Ts,
-                                            bessel_order=5)
+                                            bessel_order=5, bit_resolution=adc_bitres)
 
         # Define modulator
         if ideal_modulator:
@@ -1296,6 +1298,7 @@ class PulseShapingIM(IntensityModulationChannel):
                  smf_config: dict, photodiode_config: dict, eam_config: dict,
                  ideal_modulator=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
+                 dac_bitres=None, adc_bitres=None,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
@@ -1305,6 +1308,7 @@ class PulseShapingIM(IntensityModulationChannel):
                          ideal_modulator=ideal_modulator,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         dac_bitres=dac_bitres, adc_bitres=adc_bitres,
                          rrc_rolloff=rrc_rolloff, use_1clr=use_1clr, eval_batch_size_in_syms=eval_batch_size_in_syms,
                          print_interval=print_interval)
 
@@ -1318,6 +1322,7 @@ class RxFilteringIM(IntensityModulationChannel):
                  smf_config: dict, photodiode_config: dict, eam_config: dict,
                  ideal_modulator=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
+                 dac_bitres=None, adc_bitres=None,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
@@ -1326,6 +1331,7 @@ class RxFilteringIM(IntensityModulationChannel):
                          ideal_modulator=ideal_modulator, learn_rx=True, learn_tx=False,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         dac_bitres=dac_bitres, adc_bitres=adc_bitres,
                          rrc_rolloff=rrc_rolloff, use_1clr=use_1clr, eval_batch_size_in_syms=eval_batch_size_in_syms,
                          print_interval=print_interval)
 
@@ -1338,6 +1344,7 @@ class JointTxRxIM(IntensityModulationChannel):
                  smf_config: dict, photodiode_config: dict, eam_config: dict,
                  ideal_modulator=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
+                 dac_bitres=None, adc_bitres=None,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
@@ -1347,6 +1354,7 @@ class JointTxRxIM(IntensityModulationChannel):
                          tx_filter_length=tx_filter_length,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         dac_bitres=dac_bitres, adc_bitres=adc_bitres,
                          rrc_rolloff=rrc_rolloff, use_1clr=use_1clr, eval_batch_size_in_syms=eval_batch_size_in_syms,
                          print_interval=print_interval)
 
@@ -1360,6 +1368,7 @@ class LinearFFEIM(IntensityModulationChannel):
                  smf_config: dict, photodiode_config: dict, eam_config: dict,
                  ideal_modulator=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
+                 dac_bitres=None, adc_bitres=None,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
@@ -1369,5 +1378,6 @@ class LinearFFEIM(IntensityModulationChannel):
                          tx_filter_length=tx_filter_length,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         dac_bitres=dac_bitres, adc_bitres=adc_bitres,
                          rrc_rolloff=rrc_rolloff, use_1clr=use_1clr, eval_batch_size_in_syms=eval_batch_size_in_syms,
                          print_interval=print_interval)
