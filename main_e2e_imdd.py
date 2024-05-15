@@ -51,12 +51,13 @@ if __name__ == "__main__":
         'pp_voltage': 2.0,
         'bias_voltage': -1.5,
         'laser_power_dbm': -10.0,
+        'linewidth_enhancement': 2.0,
         'linear_absorption': False
     }
 
     # Channel configuration - single model fiber
     smf_config = {
-        'fiber_length': 2.0,
+        'fiber_length': 1.0,
         'attenuation': 0.0,
         'carrier_wavelength': 1270,
         'zero_dispersion_wavelength': 1310,
@@ -234,9 +235,8 @@ if __name__ == "__main__":
         ax[0].invert_yaxis()
         ax[0].grid()
 
-        xin = torch.linspace(-imdd_system.dac.dac_min_max, imdd_system.dac.dac_min_max, 1000)
-        vin = (xin + (imdd_system.dac.dac_min_max)) / (2 * imdd_system.dac.dac_min_max)
-        ax[1].plot(xin, imdd_system.modulator.forward(xin))
+        xin = torch.linspace(0.0, 1.0, 1000)
+        ax[1].plot(xin, torch.absolute(imdd_system.modulator.forward(xin)))
         ax[1].set_xlabel('Digital signal')
         ax[1].set_ylabel('Optical field amplitude')
         ax[1].grid()

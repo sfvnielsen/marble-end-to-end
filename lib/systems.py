@@ -1239,7 +1239,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         # Apply EAM
         x_eam = self.modulator.forward(v)
         print(f"EAM: Laser power {10.0 * np.log10(self.modulator.laser_power / 1e-3) } [dBm]")
-        print(f"EAM: Power at output {10.0 * np.log10(np.average(np.square(x_eam.detach().numpy())) / 1e-3)} [dBm]")
+        print(f"EAM: Power at output {10.0 * np.log10(np.average(np.square(np.absolute(x_eam.detach().numpy()))) / 1e-3)} [dBm]")
 
         # Apply channel model
         x_chan = self.channel.forward(x_eam)

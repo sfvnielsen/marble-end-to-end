@@ -43,19 +43,7 @@ class ElectroAbsorptionModulator(object):
         “Geometric Shaping for Distortion-Limited Intensity Modulation/Direct Detection Data Center Links,”
         IEEE Photonics Journal, vol. 15, no. 6, pp. 1–17, 2023, doi: 10.1109/JPHOT.2023.3335398.
 
-
-        absorption transfer function derived from
-
-        A. D. Gallant and J. C. Cartledge,
-        “Characterization of the Dynamic Absorption of Electroabsorption Modulators With Application to OTDM Demultiplexing,”
-        Journal of Lightwave Technology, vol. 26, no. 13, pp. 1835–1839, Jul. 2008, doi: 10.1109/JLT.2008.922190.
-
     """
-
-    # Voltage-to-absorption curve derived from (Gallant and Cartledge, 2008) (Figure 3a, CIP static curve)
-    # Read knee points and apply cubic spline fit - flip to supply monotonically increasing values to spline object
-    #ABSORPTION_KNEE_POINTS_X = torch.flip(torch.Tensor([0.0, -0.5,  -1.0, -1.5, -2.0, -2.5, -3.0, -3.5, -4.0]), (0,))  # driving voltage
-    #ABSORPTION_KNEE_POINTS_Y = torch.flip(torch.Tensor([0.0,  1.0,   2.5,  7.0, 20.0, 28.0, 28.0, 26.0, 24.0]), (0,))  # absorption in dB
 
     # Voltage-to-absorption curve directly from (Liang and Kahn, 2023)
     ABSORPTION_KNEE_POINTS_X = torch.flip(torch.Tensor([0.0, -0.5,  -1.0, -2.0, -3.0, -3.5,  -3.8]), (0,))  # driving voltage
@@ -65,18 +53,17 @@ class ElectroAbsorptionModulator(object):
     LINEAR_ABSORPTION_KNEE_POINTS_X = torch.flip(torch.Tensor([0.0, -1.0,  -2.0, -3.0, -4.0]), (0,))  # driving voltage
     LINEAR_ABSORPTION_KNEE_POINTS_Y = torch.flip(torch.Tensor([0.0, 1.0,   2.0,  3.0,  4.0]), (0,))  # absorption in dB
 
-    def __init__(self, insertion_loss, pp_voltage, bias_voltage, laser_power_dbm, linear_absorption=False):
+    def __init__(self, insertion_loss, pp_voltage, bias_voltage, laser_power_dbm,
+                 linewidth_enhancement=0.0, linear_absorption=False):
         # Parse input arguments
         self.insertion_loss = insertion_loss
         self.pp_voltage = pp_voltage
         self.bias_voltage = bias_voltage
         self.laser_power = 10 ** (laser_power_dbm / 10) * 1e-3  # [Watt]
+        self.linewidth_enhancement = linewidth_enhancement  # chirp model (reasonable values in the interval [0,3])
 
         self.x_knee_points = self.ABSORPTION_KNEE_POINTS_X if not linear_absorption else self.LINEAR_ABSORPTION_KNEE_POINTS_X
         self.y_knee_points = self.ABSORPTION_KNEE_POINTS_Y if not linear_absorption else self.LINEAR_ABSORPTION_KNEE_POINTS_Y
-
-        # TODO: Modulator chirp
-        # TODO: Map voltages to powers such that distance between them is preserved. How to do that when pulse shaping is involved?
 
         # Caculate the cubic spline coefficients based on the given knee-points
         spline_coefficients = natural_cubic_spline_coeffs(self.x_knee_points, self.y_knee_points[:, None])
@@ -110,8 +97,14 @@ class ElectroAbsorptionModulator(object):
 
         # Return transmitted field amplitude
         y = torch.sqrt(self.laser_power * torch.pow(10.0, -alpha_db / 10.0))
+
+        # Calculate chirp
+        chirp = self.linewidth_enhancement / 2 * torch.log(torch.square(y))
+
+        # Log launch power
         self.Plaunch_dbm = 10.0 * torch.log10(torch.mean(torch.square(y)) / 1e-3)
-        return y
+
+        return y * torch.exp(1j * chirp)
 
 
 class Photodiode(object):
@@ -165,17 +158,17 @@ class Photodiode(object):
         return self.Prec
 
     def forward(self, x):
+        # Square law detection of input
+        x2 = torch.real(torch.square(torch.abs(x)))
+
         # Generate thermal noise
-        thermal_noise = self.thermal_noise_std * torch.randn_like(x)
+        thermal_noise = self.thermal_noise_std * torch.randn_like(x2)
 
         # Calculate shot_noise variance based on avg. signal power
-        var_shot = 2 * self.ELECTRON_CHARGE * (self.responsivity * torch.mean(torch.square(x)) + 
+        var_shot = 2 * self.ELECTRON_CHARGE * (self.responsivity * torch.mean(torch.square(torch.real(torch.absolute(x)))) + 
                                                self.dark_current) * self.bandwidth
 
-        shot_noise = torch.sqrt(self.Fs * (var_shot / (2 * self.bandwidth))) * torch.randn_like(x)
-
-        # Square law detection of input
-        x2 = torch.square(torch.abs(x))
+        shot_noise = torch.sqrt(self.Fs * (var_shot / (2 * self.bandwidth))) * torch.randn_like(x2)
 
         # Update energy pr. symbol and received power before addition of noise
         self.Prec = 10.0 * torch.log10(torch.mean(x2) / 1e-3)

@@ -74,4 +74,4 @@ class SingleModeFiber(object):
         Nfft = len(x)
         omega = 2 * torch.pi * self.Fs * fftfreq(Nfft)
         xo = ifft(fft(x) * self._calculate_fq_filter(omega))
-        return xo.real
+        return xo
