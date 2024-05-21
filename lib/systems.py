@@ -777,6 +777,9 @@ class LinearFFEAWGNwithBWL(BasicAWGNwithBWL):
                          rrc_rolloff=rrc_rolloff,
                          use_brickwall=use_brickwall,
                          use_1clr=use_1clr)
+    
+    def get_equaliser_filter(self):
+        return self.equaliser.filter.get_filter()
 
 class NonLinearISIChannel(LearnableTransmissionSystem):
     """
@@ -1381,3 +1384,6 @@ class LinearFFEIM(IntensityModulationChannel):
                          dac_bitres=dac_bitres, adc_bitres=adc_bitres,
                          rrc_rolloff=rrc_rolloff, use_1clr=use_1clr, eval_batch_size_in_syms=eval_batch_size_in_syms,
                          print_interval=print_interval)
+
+    def get_equaliser_filter(self):
+        return self.equaliser.filter.get_filter()
