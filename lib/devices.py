@@ -268,11 +268,11 @@ class AnalogToDigitalConverter(object):
         return x_lp
 
     def eval(self, v):
-        # Map digital signal to a voltage
-        if self.bit_resolution:
-            v = quantize(v, self.bit_resolution)
-
         # Run lpf
         x_lp = self.lpf.forward(v)
-        
+
+        # Quantize if specfied
+        if self.bit_resolution:
+            x_lp = quantize(x_lp, self.bit_resolution)
+
         return x_lp
