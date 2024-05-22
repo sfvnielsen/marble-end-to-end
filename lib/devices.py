@@ -200,10 +200,11 @@ class DigitalToAnalogConverter(object):
     """
         DAC with bandwidth limitation modeled by a Bessel filter
     """
-    def __init__(self, bwl_cutoff, dac_min_max, fs, bit_resolution=None, bessel_order=5, dtype=torch.float64) -> None:
+    def __init__(self, bwl_cutoff, dac_min_max, fs, bit_resolution=None, bessel_order=5,
+                 out_power_dbfs=-6, dtype=torch.float64) -> None:
         # Set attributes of DAC
         self.dac_min_max = dac_min_max  # max-absolute value to be used in the digital signal
-        self.power_dbfs = -6  # power after signal normalization to leave headroom for peaks
+        self.power_dbfs = out_power_dbfs  # power after signal normalization to leave headroom for peaks
         self.bit_resolution = bit_resolution
 
         # Initialize bessel filter
@@ -231,6 +232,9 @@ class DigitalToAnalogConverter(object):
         # Map digital signal to a voltage
         v = (x + (self.dac_min_max)) / (2 * self.dac_min_max)
         v = v / torch.sqrt(torch.mean(torch.square(v))) * 10 ** (self.power_dbfs / 20)  # normalize power
+
+        if torch.any(v > 1.0) or torch.any(v < 0.0):
+            print(f"WARNING: Over/underflow in DAC (min: {v.min()}, max: {v.max()})")
 
         if self.bit_resolution:
             v = quantize(v, self.bit_resolution)
