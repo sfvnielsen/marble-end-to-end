@@ -203,6 +203,7 @@ class DigitalToAnalogConverter(object):
     def __init__(self, bwl_cutoff, dac_min_max, fs, bit_resolution=None, bessel_order=5, dtype=torch.float64) -> None:
         # Set attributes of DAC
         self.dac_min_max = dac_min_max  # max-absolute value to be used in the digital signal
+        self.power_dbfs = -6  # power after signal normalization to leave headroom for peaks
         self.bit_resolution = bit_resolution
 
         # Initialize bessel filter
@@ -219,7 +220,7 @@ class DigitalToAnalogConverter(object):
     def forward(self, x):
         # Map digital signal to a voltage
         v = (x + (self.dac_min_max)) / (2 * self.dac_min_max)
-        v = v / torch.sqrt(torch.mean(torch.square(v)))  # normalize power
+        v = v / torch.sqrt(torch.mean(torch.square(v))) * 10 ** (self.power_dbfs / 20)  # normalize power
 
         # Run lpf
         v_lp = self.lpf.forward(v)
@@ -229,10 +230,10 @@ class DigitalToAnalogConverter(object):
     def eval(self, x):
         # Map digital signal to a voltage
         v = (x + (self.dac_min_max)) / (2 * self.dac_min_max)
+        v = v / torch.sqrt(torch.mean(torch.square(v))) * 10 ** (self.power_dbfs / 20)  # normalize power
+
         if self.bit_resolution:
             v = quantize(v, self.bit_resolution)
-
-        v = v / torch.sqrt(torch.mean(torch.square(v)))  # normalize power
 
         print(f"DAC: Power in digital domain: {10.0 * torch.log10(torch.mean(torch.square(v)))} [dBFS]")
 

@@ -50,9 +50,9 @@ if __name__ == "__main__":
     ideal_modulator = False
     eam_config = {
         'insertion_loss': 0.0,
-        'pp_voltage': 2.0,
+        'pp_voltage': 3.0,
         'bias_voltage': -1.5,
-        'laser_power_dbm': -10.0,
+        'laser_power_dbm': -6.0,
         'linewidth_enhancement': 2.0,
         'linear_absorption': False
     }
