@@ -4,6 +4,7 @@ from torchaudio.functional import convolve, lfilter
 import numpy.typing as npt
 import numpy as np
 from scipy.signal import bessel, group_delay
+from scipy.signal import lfilter as scipy_lfilter
 
 # FIXME: Simplify these operations
 # FIXME: Switch to torchaudio.functional.convolve - does true convolution
@@ -27,6 +28,9 @@ class AllPassFilter(torch.nn.Module):
         return x
 
     def forward_batched(self, x, batch_size):
+        return x
+    
+    def forward_numpy(self, x):
         return x
     
     def get_filters(self):
@@ -97,6 +101,12 @@ class FIRfilter(torch.nn.Module):
 
         return y
 
+    def forward_numpy(self, x: torch.TensorType):
+        xnp = x.numpy()
+        y = np.convolve(np.pad(xnp, self.padding, mode='constant', constant_values=0.0),
+                        self.conv_weights.numpy(), mode='valid')[::self.stride]
+        return torch.from_numpy(y)
+
     def get_filter(self):
         #return self.conv.weight.squeeze().detach().cpu().numpy()
         return self.conv_weights.detach().cpu().numpy()
@@ -117,6 +127,7 @@ class BesselFilter(torch.nn.Module):
     def __init__(self, bessel_order: int, cutoff_hz: float, fs: float,
                  dtype=torch.float64, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        self.dtype = dtype
         bessel_b, bessel_a = bessel(bessel_order, cutoff_hz, fs=fs, norm='mag')
         self.filter_b, self.filter_a = torch.from_numpy(bessel_b), torch.from_numpy(bessel_a)
         # Crude estimate of sample delay through filter - take average in passband
@@ -127,10 +138,17 @@ class BesselFilter(torch.nn.Module):
         # lfilter assumes input is between -1 and 1. Do so and rescale afterwards.
         xmax = torch.max(torch.abs(x))
         return xmax *  lfilter(x / xmax, self.filter_a, self.filter_b)
+    
+    def forward_numpy(self, y):
+        # convert to numpy - uses scipys lfilter and coverts back
+        # only to be used during eval
+        return torch.from_numpy(scipy_lfilter(self.filter_b.numpy(),
+                                              self.filter_a.numpy(),
+                                              y.numpy()))
 
     def forward_batched(self, x, batch_size):
-        print("BesselFilter: Warning! 'forward_batched' method not implemented yet. Deferring to forward.")
-        return self.forward(x)
+        print("BesselFilter: Warning! Using Numpy forward method (ignoring batch size)")
+        return self.forward_numpy(x)
 
     def get_filters(self):
         return self.filter_b.detach().cpu().numpy(), self.filter_a.detach().cpu().numpy()

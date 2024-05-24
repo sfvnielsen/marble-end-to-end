@@ -172,7 +172,7 @@ class Photodiode(object):
 
         # Update energy pr. symbol and received power before addition of noise
         self.Prec = 10.0 * torch.log10(torch.mean(x2) / 1e-3)
-        self.Es = torch.mean(torch.sum(torch.square(torch.reshape(x2 - x2.mean(), (-1, self.sps))), dim=1))
+        self.Es = torch.mean(torch.sum(torch.square(torch.reshape((x2 - x2.mean())[0:len(x2)//self.sps * self.sps], (-1, self.sps))), dim=1))
 
         return x2 + thermal_noise + shot_noise
 
@@ -211,6 +211,10 @@ class DigitalToAnalogConverter(object):
         self.lpf = AllPassFilter()
         if bwl_cutoff is not None:
             self.lpf = BesselFilter(bessel_order=bessel_order, cutoff_hz=bwl_cutoff, fs=fs, dtype=dtype)
+
+    def set_bitres(self, new_bitres):
+        assert isinstance(new_bitres, int) or new_bitres is None
+        self.bit_resolution = new_bitres
     
     def get_sample_delay(self):
         return self.lpf.get_sample_delay()
@@ -242,7 +246,7 @@ class DigitalToAnalogConverter(object):
         print(f"DAC: Power in digital domain: {10.0 * torch.log10(torch.mean(torch.square(v)))} [dBFS]")
 
         # Run lpf
-        v_lp = self.lpf.forward(v)
+        v_lp = self.lpf.forward_numpy(v)
         
         return v_lp
 
@@ -254,11 +258,16 @@ class AnalogToDigitalConverter(object):
     def __init__(self, bwl_cutoff, fs, bit_resolution=None, bessel_order=5, dtype=torch.float64) -> None:
         # Set attributes
         self.bit_resolution = bit_resolution
+        self.dtype = dtype
 
         # Initialize bessel filter
         self.lpf = AllPassFilter()
         if bwl_cutoff is not None:
             self.lpf = BesselFilter(bessel_order=bessel_order, cutoff_hz=bwl_cutoff, fs=fs, dtype=dtype)
+    
+    def set_bitres(self, new_bitres):
+        assert isinstance(new_bitres, int) or new_bitres is None
+        self.bit_resolution = new_bitres
 
     def get_sample_delay(self):
         return self.lpf.get_sample_delay()
@@ -274,7 +283,7 @@ class AnalogToDigitalConverter(object):
 
     def eval(self, v):
         # Run lpf
-        x_lp = self.lpf.forward(v)
+        x_lp = self.lpf.forward_numpy(v)
 
         # Quantize if specfied
         if self.bit_resolution:

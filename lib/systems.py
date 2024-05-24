@@ -6,6 +6,7 @@ import numpy.typing as npt
 import numpy as np
 import torch
 
+from torch.fft import fft, ifft, fftfreq
 from scipy.signal import bessel, lfilter, freqz, group_delay
 from scipy.fft import fftshift
 from commpy.filters import rrcosfilter
@@ -316,14 +317,14 @@ class LearnableTransmissionSystem(object):
         if return_loss:
             return loss_per_batch
 
-    def evaluate(self, symbols: npt.ArrayLike, decimate: bool = True):
+    def evaluate(self, symbols: npt.ArrayLike, **eval_config):
         # Upsample
         symbols_up = np.zeros(self.sps * len(symbols), dtype=symbols.dtype)
         symbols_up[0::self.sps] = symbols
         symbols_up = torch.from_numpy(symbols_up)
         # Run forward pass without gradient information - run batched version to not run into memory problems
         with torch.no_grad():
-            rx_out = self._eval(symbols_up, batch_size=self.eval_batch_size, decimate=decimate)
+            rx_out = self._eval(symbols_up, batch_size=self.eval_batch_size, **eval_config)
 
         return rx_out.detach().cpu().numpy()
 
@@ -630,7 +631,7 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
     def _eval(self, symbols_up: torch.TensorType, batch_size: int, decimate: bool = True):
         # Input is assumed to be upsampled sybmols
         # Apply pulse shaper
-        x = self.pulse_shaper.forward_batched(symbols_up, batch_size)
+        x = self.pulse_shaper.forward_numpy(symbols_up)
 
         # Normalize
         x = x / self.normalization_constant
@@ -648,7 +649,7 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         # Apply rx filter
         if not decimate:
             self.rx_filter.set_stride(1)  # output all samples from rx_filter
-        rx_filter_out = self.rx_filter.forward_batched(y_lp, batch_size)
+        rx_filter_out = self.rx_filter.forward_numpy(y_lp)
 
         # Apply equaliser
         if not decimate and self.use_eq:
@@ -933,7 +934,7 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
     def _eval(self, symbols_up: torch.TensorType, batch_size: int, decimate: bool = True):
         # Input is assumed to be upsampled sybmols
         # Apply pulse shaper
-        x = self.pulse_shaper.forward_batched(symbols_up, batch_size)
+        x = self.pulse_shaper.forward_numpy(symbols_up)
 
         # Normalize
         x = x / self.normalization_constant
@@ -942,9 +943,9 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
         x_lp = self.dac.forward_batched(x, batch_size)
 
         # Apply non-linearity - FIR + non linear + FIR
-        x_nl = self.isi_filter1.forward_batched(x_lp, batch_size)
+        x_nl = self.isi_filter1.forward_numpy(x_lp)
         x_nl = self.non_linear_function(x_nl)
-        x_nl = self.isi_filter2.forward_batched(x_nl, batch_size)
+        x_nl = self.isi_filter2.forward_numpy(x_nl)
 
         # Add white noise
         noise_std = self.calculate_noise_std(x_nl)
@@ -956,7 +957,7 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
         # Apply rx filter
         if not decimate:
             self.rx_filter.set_stride(1)  # output all samples from rx_filter
-        rx_filter_out = self.rx_filter.forward_batched(y_lp, batch_size)
+        rx_filter_out = self.rx_filter.forward_numpy(y_lp, batch_size)
 
         # Power normalize and rescale to constellation
         rx_filter_out = rx_filter_out / torch.sqrt(torch.mean(torch.square(rx_filter_out))) * self.constellation_scale
@@ -1131,12 +1132,12 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         info_bw = 0.5 * baud_rate
 
         # Digital-to-analog (DAC) converter
-        self.dac = DigitalToAnalogConverter(bwl_cutoff=info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts,
+        self.dac = DigitalToAnalogConverter(bwl_cutoff=None if dac_bwl_relative_cutoff is None else info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts,
                                             bessel_order=5, dac_min_max=np.sum(np.abs(tx_filter_init)) * np.sqrt(np.average(np.square(constellation)) / sps),
                                             bit_resolution=dac_bitres)
 
         # Analog-to-digial (ADC) converter
-        self.adc = AnalogToDigitalConverter(bwl_cutoff=info_bw * adc_bwl_relative_cutoff, fs=1/self.Ts,
+        self.adc = AnalogToDigitalConverter(bwl_cutoff=None if adc_bwl_relative_cutoff is None else info_bw * adc_bwl_relative_cutoff, fs=1/self.Ts,
                                             bessel_order=5, bit_resolution=adc_bitres)
 
         # Define modulator
@@ -1221,7 +1222,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         # Normalize
         y_norm = (y_lp - y_lp.mean()) / (y_lp.std())
 
-        # Apply rx filter - applies stride inside filter (outputs sps = 1) 
+        # Apply rx filter - applies stride inside filter (outputs sps = 1)
         # (if equaliser is not specified)
         rx_filter_out = self.rx_filter.forward(y_norm)
 
@@ -1236,7 +1237,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
     def _eval(self, symbols_up: torch.TensorType, batch_size: int, decimate: bool = True):
         # Input is assumed to be upsampled sybmols
         # Apply pulse shaper
-        x = self.pulse_shaper.forward_batched(symbols_up, batch_size)
+        x = self.pulse_shaper.forward_numpy(symbols_up)
 
         # Apply bandwidth limitation in the DAC
         v = self.dac.eval(x)
@@ -1263,7 +1264,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         # Apply rx filter - applies stride inside filter (outputs sps = 1)
         if not decimate:
             self.rx_filter.set_stride(1)  # output all samples from rx_filter
-        rx_filter_out = self.rx_filter.forward_batched(y_norm, batch_size)
+        rx_filter_out = self.rx_filter.forward_numpy(y_norm)
 
         # Apply equaliser
         if not decimate and self.use_eq:
@@ -1387,3 +1388,240 @@ class LinearFFEIM(IntensityModulationChannel):
 
     def get_equaliser_filter(self):
         return self.equaliser.filter.get_filter()
+
+
+class IntensityModulationChannelwithWDM(IntensityModulationChannel):
+    """
+        Intensity modulation/direct detection (IM/DD) system inspired by
+
+        E. M. Liang and J. M. Kahn,
+        “Geometric Shaping for Distortion-Limited Intensity Modulation/Direct Detection Data Center Links,”
+        IEEE Photonics Journal, vol. 15, no. 6, pp. 1–17, 2023, doi: 10.1109/JPHOT.2023.3335398.
+
+        with wavelength division multiplexing (WDM)
+        
+        FIXME: WDM only implemnted during evaluation!
+
+        The system implements an electro absorption modulator (EAM), based on
+        absorption curves derived from the above reference.
+
+        System has the following structure during evaluation
+
+        tx : symbols -> upsampling -> pulse shaping -> dac -> eam
+
+        [tx] x n_channels -> WDM shift and add ->  singe mode fiber
+                                                          |
+                                                    channel selection
+                                                      (filtering)
+                                                          |
+          <-  symbol decision <- filtering <- adc <- photodiode
+
+    """
+    def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
+                 learn_rx, learn_tx, rx_filter_length, tx_filter_length,
+                 smf_config: dict, photodiode_config: dict, eam_config: dict,
+                 ideal_modulator=False, equaliser_config: dict | None = None,
+                 rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
+                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
+        super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
+                         batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
+                         learn_rx=learn_rx, learn_tx=learn_tx, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
+                         smf_config=smf_config, photodiode_config=photodiode_config, eam_config=eam_config,
+                         ideal_modulator=ideal_modulator, equaliser_config=equaliser_config,
+                         rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
+                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         rrc_rolloff=rrc_rolloff, dac_bitres=None, adc_bitres=None,
+                         eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval)
+        
+        
+    def eval_tx(self, symbols_up: torch.TensorType, n_channels: int, channel_spacing_hz: float,
+                batch_size: int, dac_bitres: int | None = None, torch_seed: int = 0):
+        # Generate interferer symbols - randomly permute the input sequence
+        # Channel of interest will be the "middle" chanel (idx = n_channels // 2)
+        rng_gen = torch.random.manual_seed(torch_seed)
+        symbols_up_chan = torch.zeros((symbols_up.shape[0], n_channels), dtype=symbols_up.dtype)
+        symbols_up_chan[::, n_channels // 2] = symbols_up
+        channels_to_fill = [i for i in range(n_channels) if i != n_channels // 2]  # all except middle
+        for cf in channels_to_fill:
+            symbols_up_chan[0::self.sps, cf] = symbols_up[::self.sps][torch.randperm(symbols_up.shape[0] // self.sps, generator=rng_gen)]
+        
+        # Prepare WDM channel
+        tx_wdm = torch.zeros((symbols_up_chan.shape[0], ), dtype=torch.complex128)
+        channel_fq_grid = torch.arange(-np.floor(n_channels / 2), np.floor(n_channels / 2) + 1, 1) * channel_spacing_hz
+
+        # Set DAC bit resolution
+        self.dac.set_bitres(dac_bitres)
+        
+        print(f"Channel spacing: {channel_spacing_hz / 1e9} GHz")
+        print(f"Channel grid: {channel_fq_grid / 1e9} GHz")
+        
+        for c in range(n_channels):
+            x = self.pulse_shaper.forward_numpy(symbols_up_chan[:, c])
+
+            # Apply bandwidth limitation in the DAC
+            v = self.dac.eval(x)
+
+            # Apply EAM
+            x_eam = self.modulator.forward(v)
+            print(f"EAM (channel {c}): Power at output {10.0 * np.log10(np.average(np.square(np.absolute(x_eam.detach().numpy()))) / 1e-3)} [dBm]")
+
+            tx_wdm += x_eam * torch.exp(1j * 2 * torch.pi * (channel_fq_grid[c] * self.Ts) * torch.arange(0, x.shape[0], dtype=torch.float64))
+        
+        return tx_wdm
+
+    def eval_rx(self, x_chan: torch.TensorType, decimate: bool, batch_size: int, adc_bitres: int | None):
+        # Apply photodiode
+        y = self.photodiode.forward(x_chan)
+        self.set_energy_pr_symbol(self.photodiode.Es)
+        print(f"Photodiode: Received power {self.photodiode.get_received_power_dbm()} [dBm]")
+
+        # Apply bandwidth limitation in the ADC
+        self.adc.set_bitres(adc_bitres)
+        y_lp = self.adc.eval(y)
+
+        # Normalize
+        y_norm = (y_lp - y_lp.mean()) / (y_lp.std())
+
+        # Apply rx filter - applies stride inside filter (outputs sps = 1)
+        if not decimate:
+            self.rx_filter.set_stride(1)  # output all samples from rx_filter
+        rx_filter_out = self.rx_filter.forward_numpy(y_norm)
+
+        # Apply equaliser
+        if not decimate and self.use_eq:
+            self.equaliser.set_stride(1)  # output all samples from equaliser
+        rx_eq_out = self.equaliser.forward_batched(rx_filter_out, batch_size)
+
+        # Power normalize and rescale to constellation
+        rx_eq_out = rx_eq_out / torch.sqrt(torch.mean(torch.square(rx_eq_out))) * self.constellation_scale
+
+        return rx_eq_out
+    
+    def eval_channel_selection(self, x_smf, channel_spacing_hz):
+        N_fft = len(x_smf)
+        H = fft(x_smf) * self.Ts
+        fqs = fftfreq(N_fft, self.Ts)
+        fqs_zero = torch.abs(fqs) > (channel_spacing_hz / 2)  # frequencies to zero
+        H[fqs_zero] = 0.0
+        x_chan = ifft(H) * 1 / self.Ts
+        return x_chan
+
+
+    # FIXME: Replace this with the acutal evaluate call.
+    def _eval(self, symbols_up: torch.TensorType, batch_size: int, **eval_config):
+        # Fetch config
+        decimate = eval_config.get('decimate', True)
+        channel_spacing_hz = eval_config.get('channel_spacing_hz')
+        n_channels = eval_config.get('n_channels', 3)
+        torch_seed = eval_config.get('seed', 0)
+        assert (n_channels + 1) % 2 == 0
+
+        # Apply Tx (including generating interferer symbols and WDM signal)
+        tx_wdm = self.eval_tx(symbols_up, n_channels, channel_spacing_hz, batch_size,
+                              dac_bitres=eval_config.get('dac_bitres', None), torch_seed=torch_seed)
+
+        # Apply SMF
+        x_smf = self.channel.forward(tx_wdm)
+
+        # Channel selection - filter out everything except the "middle" channel
+        print(f"Power before channel selection: {10.0 * torch.log10(torch.mean(torch.square(torch.abs(x_smf))) / 1e-3)} [dBm]")
+        x_chan = self.eval_channel_selection(x_smf, channel_spacing_hz)
+        
+        # Apply Rx
+        rx = self.eval_rx(x_chan, decimate, batch_size, adc_bitres=eval_config.get('adc_bitres', None))
+
+        return rx
+
+
+class PulseShapingIMwithWDM(IntensityModulationChannelwithWDM):
+    """
+        Intensity modulation/direct detection (IM/DD) system with WDM evaluation
+
+        Pulse-shaper is learned
+
+    """
+    def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
+                 rx_filter_length, tx_filter_length,
+                 smf_config: dict, photodiode_config: dict, eam_config: dict,
+                 ideal_modulator=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
+                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
+        super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
+                         batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
+                         learn_rx=False, learn_tx=True, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
+                         smf_config=smf_config, photodiode_config=photodiode_config, eam_config=eam_config,
+                         ideal_modulator=ideal_modulator, equaliser_config=None,
+                         rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
+                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval)
+
+
+class RxFilteringIMwithWDM(IntensityModulationChannelwithWDM):
+    """
+        Intensity modulation/direct detection (IM/DD) system with WDM evaluation
+
+        Rx-filter is learned
+
+    """
+    def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
+                 rx_filter_length, tx_filter_length,
+                 smf_config: dict, photodiode_config: dict, eam_config: dict,
+                 ideal_modulator=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
+                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
+        super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
+                         batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
+                         learn_rx=True, learn_tx=False, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
+                         smf_config=smf_config, photodiode_config=photodiode_config, eam_config=eam_config,
+                         ideal_modulator=ideal_modulator, equaliser_config=None,
+                         rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
+                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval)
+
+
+class JointTxRxIMwithWDM(IntensityModulationChannelwithWDM):
+    """
+        Intensity modulation/direct detection (IM/DD) system with WDM evaluation
+
+        Pulse-shaper and rx-filter is learned
+
+    """
+    def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
+                 rx_filter_length, tx_filter_length,
+                 smf_config: dict, photodiode_config: dict, eam_config: dict,
+                 ideal_modulator=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
+                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
+        super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
+                         batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
+                         learn_rx=True, learn_tx=True, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
+                         smf_config=smf_config, photodiode_config=photodiode_config, eam_config=eam_config,
+                         ideal_modulator=ideal_modulator, equaliser_config=None,
+                         rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
+                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval)
+
+
+class LinearFFEIMwithWDM(IntensityModulationChannelwithWDM):
+    """
+        Intensity modulation/direct detection (IM/DD) system with WDM evaluation
+
+        Pulse-shaper and rx-filter are fixed to RRC and linear equaliser is run afterwards
+
+    """
+    def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
+                 rx_filter_length, tx_filter_length,
+                 smf_config: dict, photodiode_config: dict, eam_config: dict,
+                 equaliser_config: dict,
+                 ideal_modulator=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
+                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
+        super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
+                         batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
+                         learn_rx=False, learn_tx=False, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
+                         smf_config=smf_config, photodiode_config=photodiode_config, eam_config=eam_config,
+                         ideal_modulator=ideal_modulator, equaliser_config=equaliser_config,
+                         rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
+                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval)

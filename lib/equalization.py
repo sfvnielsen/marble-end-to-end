@@ -78,8 +78,8 @@ class LinearFeedForwardEqualiser(GenericTorchEqualizer):
         y_eq = self.filter.forward(y)
         return y_eq
     
-    def forward_batched(self, y, batch_size):
-        return self.filter.forward_batched(y, batch_size)
+    def forward_batched(self, y, batch_size=None):
+        return self.filter.forward_numpy(y)
     
     def zero_grad(self):
         self.filter.zero_grad()
