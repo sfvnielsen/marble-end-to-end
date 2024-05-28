@@ -42,8 +42,8 @@ if __name__ == "__main__":
     learn_rx, rx_filter_length = True, 25
     dac_bwl_relative_cutoff = 0.9  # low-pass filter cuttoff relative to information bandwidth
     adc_bwl_relative_cutoff = 0.9
-    adc_bitres = 5
-    dac_bitres = 5
+    eval_adc_bitres = 5
+    eval_dac_bitres = 5
     use_1clr = True
 
     # Configuration of electro absorption modulator
@@ -102,7 +102,7 @@ if __name__ == "__main__":
                                              learn_tx=learn_tx, learn_rx=learn_rx, rrc_rolloff=rrc_rolloff,
                                              tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                              adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
-                                             dac_bitres=dac_bitres, adc_bitres=adc_bitres,
+                                             dac_bitres=None, adc_bitres=None,
                                              tx_filter_init_type='rrc', rx_filter_init_type='rrc',
                                              smf_config=smf_config, photodiode_config=photodiode_config, eam_config=eam_config,
                                              ideal_modulator=ideal_modulator)
@@ -130,7 +130,7 @@ if __name__ == "__main__":
     n_bits = int(np.log2(len(modulation_scheme.constellation)) * n_symbols_val)
     bit_sequence = random_obj.integers(0, 2, size=n_bits)
     a = modulation_scheme.modulate(bit_sequence)
-    rx_out = imdd_system.evaluate(a, decimate=False)
+    rx_out = imdd_system.evaluate(a, decimate=False, dac_bitres=eval_dac_bitres, adc_bitres=eval_adc_bitres)
     ahat = rx_out[::samples_per_symbol]
     ser, delay = calc_ser_pam(ahat, a, discard=100)
     print(f"SER: {ser} (delay: {delay})")
@@ -141,14 +141,14 @@ if __name__ == "__main__":
                                   rrc_rolloff=rrc_rolloff, ffe_n_taps=25,
                                   tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                   adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
-                                  dac_bitres=dac_bitres, adc_bitres=adc_bitres,
+                                  dac_bitres=None, adc_bitres=None,
                                   tx_filter_init_type='rrc', rx_filter_init_type='rrc',
                                   smf_config=smf_config, photodiode_config=photodiode_config, eam_config=eam_config,
                                   ideal_modulator=ideal_modulator)
 
     imdd_system_ffe.initialize_optimizer()
     imdd_system_ffe.optimize(a_train)
-    rx_out_ffe = imdd_system_ffe.evaluate(a)
+    rx_out_ffe = imdd_system_ffe.evaluate(a, dac_bitres=eval_dac_bitres, adc_bitres=eval_adc_bitres)
     ser_ffe, delay_ffe = calc_ser_pam(rx_out_ffe, a, discard=100)
     print(f"SER (FFE): {ser_ffe} (delay: {delay_ffe})")
 

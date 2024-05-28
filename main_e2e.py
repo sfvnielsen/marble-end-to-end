@@ -178,8 +178,8 @@ if __name__ == "__main__":
     # Pretty labeling
     ax[0, 0].set_ylabel('Time domain')
     ax[1, 0].set_ylabel('Fq domain')
-    ax[0, 0].set_title('Pulse Shaping (learned)' if learn_tx else 'Pulse Shaping')
-    ax[0, 1].set_title('Matched filter (learned)' if learn_rx else 'Matched filter')
+    ax[0, 0].set_title('Pulse-shaper')
+    ax[0, 1].set_title('Receiver filter')
     ax[0, 2].set_title('Total response (including LPF)')
     ax[1, 0].legend(loc='lower center')
     ax[1, 1].legend(loc='lower center')

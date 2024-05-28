@@ -1234,12 +1234,13 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
 
         return rx_eq_out
 
-    def _eval(self, symbols_up: torch.TensorType, batch_size: int, decimate: bool = True):
+    def _eval(self, symbols_up: torch.TensorType, batch_size: int, decimate: bool = True, **eval_config):
         # Input is assumed to be upsampled sybmols
         # Apply pulse shaper
         x = self.pulse_shaper.forward_numpy(symbols_up)
 
         # Apply bandwidth limitation in the DAC
+        self.dac.set_bitres(eval_config.get('dac_bitres', None))
         v = self.dac.eval(x)
 
         # Apply EAM
@@ -1256,6 +1257,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         print(f"Photodiode: Received power {self.photodiode.get_received_power_dbm()} [dBm]")
 
         # Apply bandwidth limitation in the ADC
+        self.adc.set_bitres(eval_config.get('adc_bitres', None))
         y_lp = self.adc.eval(y)
 
         # Normalize
