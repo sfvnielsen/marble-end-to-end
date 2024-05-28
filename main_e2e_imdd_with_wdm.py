@@ -124,7 +124,7 @@ if __name__ == "__main__":
     
     ffe_sys = LinearFFEIMwithWDM(sps=samples_per_symbol, baud_rate=baud_rate,
                                  learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
-                                 rrc_rolloff=rrc_rolloff, equaliser_config={'n_taps': 35},
+                                 rrc_rolloff=rrc_rolloff, ffe_n_taps=35,
                                  tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                  adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                  tx_filter_init_type='rrc', rx_filter_init_type='rrc',

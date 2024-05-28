@@ -1613,9 +1613,8 @@ class LinearFFEIMwithWDM(IntensityModulationChannelwithWDM):
 
     """
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
-                 rx_filter_length, tx_filter_length,
+                 rx_filter_length, tx_filter_length, ffe_n_taps: int,
                  smf_config: dict, photodiode_config: dict, eam_config: dict,
-                 equaliser_config: dict,
                  ideal_modulator=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
@@ -1623,7 +1622,7 @@ class LinearFFEIMwithWDM(IntensityModulationChannelwithWDM):
                          batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
                          learn_rx=False, learn_tx=False, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
                          smf_config=smf_config, photodiode_config=photodiode_config, eam_config=eam_config,
-                         ideal_modulator=ideal_modulator, equaliser_config=equaliser_config,
+                         ideal_modulator=ideal_modulator, equaliser_config={'n_taps': ffe_n_taps},
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval)
