@@ -107,6 +107,15 @@ class ElectroAbsorptionModulator(object):
         return y * torch.exp(1j * chirp)
 
 
+class MyNonLinearEAM(ElectroAbsorptionModulator):
+    """
+        Electro absorption modulator - but with custom very non-linear absorption curve
+        (cf. parent class above)
+    """
+    ABSORPTION_KNEE_POINTS_X = torch.flip(torch.Tensor([0.0, -0.5,  -1.0, -2.0, -3.0, -3.5,  -3.8]), (0,))  # driving voltage
+    ABSORPTION_KNEE_POINTS_Y = torch.flip(torch.Tensor([0.0,  0.3,   1.0,  5.0,  7.5, 7.7,  8.0]), (0,))  # absorption in dB
+
+
 class Photodiode(object):
     """
         pin photodiode implementation

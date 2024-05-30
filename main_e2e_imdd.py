@@ -47,8 +47,8 @@ if __name__ == "__main__":
     use_1clr = True
 
     # Configuration of electro absorption modulator
-    ideal_modulator = False
-    eam_config = {
+    modulator_type = 'eam'
+    modulator_config = {
         'insertion_loss': 0.0,
         'pp_voltage': 3.0,
         'bias_voltage': -1.5,
@@ -79,7 +79,7 @@ if __name__ == "__main__":
     if learn_tx and learn_rx:
         figtitles = 'both'
 
-    figprefix = f"{FIGPREFIX}_{figtitles}_vpp{eam_config['pp_voltage']}_chanlength{smf_config['fiber_length']}"
+    figprefix = f"{FIGPREFIX}_{figtitles}_vpp{modulator_config['pp_voltage']}_chanlength{smf_config['fiber_length']}"
 
     if not os.path.exists(FIGURE_DIR):
         os.mkdir(FIGURE_DIR)
@@ -104,8 +104,8 @@ if __name__ == "__main__":
                                              adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                              dac_bitres=None, adc_bitres=None,
                                              tx_filter_init_type='rrc', rx_filter_init_type='rrc',
-                                             smf_config=smf_config, photodiode_config=photodiode_config, eam_config=eam_config,
-                                             ideal_modulator=ideal_modulator)
+                                             smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
+                                             modulator_type=modulator_type)
 
     imdd_system.initialize_optimizer()
 
@@ -143,8 +143,8 @@ if __name__ == "__main__":
                                   adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                   dac_bitres=None, adc_bitres=None,
                                   tx_filter_init_type='rrc', rx_filter_init_type='rrc',
-                                  smf_config=smf_config, photodiode_config=photodiode_config, eam_config=eam_config,
-                                  ideal_modulator=ideal_modulator)
+                                  smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
+                                  modulator_type=modulator_type)
 
     imdd_system_ffe.initialize_optimizer()
     imdd_system_ffe.optimize(a_train)
@@ -222,7 +222,7 @@ if __name__ == "__main__":
     # Plot voltage-to-absorption function - compare with (Liang and Kahn)
     v = torch.linspace(-4.0, 0.0, 1000)
     fig, ax = plt.subplots(figsize=FIGSIZE, ncols=2)
-    if ideal_modulator:
+    if modulator_type == 'ideal':
         ax[0].plot(v, v)
         xin = torch.linspace(-1.0, 1.0, 1000)
         ax[1].plot(xin, imdd_system.modulator.forward(xin))

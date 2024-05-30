@@ -47,8 +47,8 @@ if __name__ == "__main__":
     use_1clr = True
 
     # Configuration of electro absorption modulator
-    ideal_modulator = False
-    eam_config = {
+    modulator_type = 'eam'
+    modulator_config = {
         'insertion_loss': 0.0,
         'pp_voltage': 3.0,
         'bias_voltage': -1.5,
@@ -101,8 +101,8 @@ if __name__ == "__main__":
                                      tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                      adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                      tx_filter_init_type='rrc', rx_filter_init_type='rrc',
-                                     smf_config=smf_config, photodiode_config=photodiode_config, eam_config=eam_config,
-                                     ideal_modulator=ideal_modulator)
+                                     smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
+                                     modulator_type=modulator_type)
 
     ps_sys = PulseShapingIMwithWDM(sps=samples_per_symbol, baud_rate=baud_rate,
                                    learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
@@ -110,8 +110,8 @@ if __name__ == "__main__":
                                    tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                    adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                    tx_filter_init_type='rrc', rx_filter_init_type='rrc',
-                                   smf_config=smf_config, photodiode_config=photodiode_config, eam_config=eam_config,
-                                   ideal_modulator=ideal_modulator)
+                                   smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
+                                   modulator_type=modulator_type)
 
     rxf_sys = RxFilteringIMwithWDM(sps=samples_per_symbol, baud_rate=baud_rate,
                                    learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
@@ -119,8 +119,8 @@ if __name__ == "__main__":
                                    tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                    adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                    tx_filter_init_type='rrc', rx_filter_init_type='rrc',
-                                   smf_config=smf_config, photodiode_config=photodiode_config, eam_config=eam_config,
-                                   ideal_modulator=ideal_modulator)
+                                   smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
+                                   modulator_type=modulator_type)
     
     ffe_sys = LinearFFEIMwithWDM(sps=samples_per_symbol, baud_rate=baud_rate,
                                  learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
@@ -128,8 +128,8 @@ if __name__ == "__main__":
                                  tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                  adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                  tx_filter_init_type='rrc', rx_filter_init_type='rrc',
-                                 smf_config=smf_config, photodiode_config=photodiode_config, eam_config=eam_config,
-                                 ideal_modulator=ideal_modulator)
+                                 smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
+                                 modulator_type=modulator_type)
     
 
     # Generate training data
