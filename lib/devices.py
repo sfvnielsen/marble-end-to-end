@@ -53,12 +53,9 @@ class ElectroAbsorptionModulator(object):
     LINEAR_ABSORPTION_KNEE_POINTS_X = torch.flip(torch.Tensor([0.0, -1.0,  -2.0, -3.0, -4.0]), (0,))  # driving voltage
     LINEAR_ABSORPTION_KNEE_POINTS_Y = torch.flip(torch.Tensor([0.0, 1.0,   2.0,  3.0,  4.0]), (0,))  # absorption in dB
 
-    def __init__(self, insertion_loss, pp_voltage, bias_voltage, laser_power_dbm,
+    def __init__(self, laser_power_dbm,
                  linewidth_enhancement=0.0, linear_absorption=False):
         # Parse input arguments
-        self.insertion_loss = insertion_loss
-        self.pp_voltage = pp_voltage
-        self.bias_voltage = bias_voltage
         self.laser_power = 10 ** (laser_power_dbm / 10) * 1e-3  # [Watt]
         self.linewidth_enhancement = linewidth_enhancement  # chirp model (reasonable values in the interval [0,3])
 
@@ -68,16 +65,6 @@ class ElectroAbsorptionModulator(object):
         # Caculate the cubic spline coefficients based on the given knee-points
         spline_coefficients = natural_cubic_spline_coeffs(self.x_knee_points, self.y_knee_points[:, None])
         self.spline_object = NaturalCubicSpline(spline_coefficients)
-
-        # Calculate voltage corresponding to given insertion loss
-        cubicspline = CubicSpline(self.x_knee_points.numpy(), self.y_knee_points.numpy())
-        self.voltage_insertion_loss = newton(lambda x: cubicspline(x) - self.insertion_loss, x0=-1.0)
-        self.voltage_min = self.bias_voltage + self.pp_voltage / 2 + self.voltage_insertion_loss
-
-        # Input to forward is assumed to be a digital signal - convert to voltages using dac_min_max
-        # (typically based on constellation values)
-        minmaxeval = self.spline_object.evaluate(torch.Tensor([1, 0]) * self.pp_voltage + self.bias_voltage + self.voltage_insertion_loss).squeeze().numpy()
-        self.ex_ratio = minmaxeval[1] - minmaxeval[0]
 
         # Initialize launch power
         self.Plaunch_dbm = None
@@ -89,11 +76,8 @@ class ElectroAbsorptionModulator(object):
         return self.Plaunch_dbm
 
     def forward(self, v):
-        # Assumes that v is the input voltage (normalized to the [0, 1] range)
-        z = self.pp_voltage * v + self.bias_voltage + self.voltage_insertion_loss
-
         # Calculate absorption from voltage
-        alpha_db = self.spline_object.evaluate(z).squeeze()
+        alpha_db = self.spline_object.evaluate(v).squeeze()
 
         # Return transmitted field amplitude
         y = torch.sqrt(self.laser_power * torch.pow(10.0, -alpha_db / 10.0))
@@ -112,8 +96,8 @@ class MyNonLinearEAM(ElectroAbsorptionModulator):
         Electro absorption modulator - but with custom very non-linear absorption curve
         (cf. parent class above)
     """
-    ABSORPTION_KNEE_POINTS_X = torch.flip(torch.Tensor([0.0, -0.5,  -1.0, -2.0, -3.0, -3.5,  -3.8]), (0,))  # driving voltage
-    ABSORPTION_KNEE_POINTS_Y = torch.flip(torch.Tensor([0.0,  0.3,   1.0,  5.0,  7.5, 7.7,  8.0]), (0,))  # absorption in dB
+    ABSORPTION_KNEE_POINTS_X = torch.flip(torch.Tensor([0.0, -0.5,  -1.0, -2.5, -3.5,  -4.0]), (0,))  # driving voltage
+    ABSORPTION_KNEE_POINTS_Y = torch.flip(torch.Tensor([0.0,  0.5,   1.0,  2.5,  2.6,  2.6]), (0,))  # absorption in dB
 
 
 class Photodiode(object):
@@ -209,10 +193,12 @@ class DigitalToAnalogConverter(object):
     """
         DAC with bandwidth limitation modeled by a Bessel filter
     """
-    def __init__(self, bwl_cutoff, dac_min_max, fs, bit_resolution=None, bessel_order=5,
-                 out_power_dbfs=-6, dtype=torch.float64) -> None:
+    def __init__(self, bwl_cutoff, peak_to_peak_voltage, bias_voltage,
+                 fs, bit_resolution=None, bessel_order=5,
+                 out_power_dbfs=-12, dtype=torch.float64) -> None:
         # Set attributes of DAC
-        self.dac_min_max = dac_min_max  # max-absolute value to be used in the digital signal
+        self.v_pp = peak_to_peak_voltage
+        self.v_bias = bias_voltage
         self.power_dbfs = out_power_dbfs  # power after signal normalization to leave headroom for peaks
         self.bit_resolution = bit_resolution
 
@@ -233,31 +219,31 @@ class DigitalToAnalogConverter(object):
 
     def forward(self, x):
         # Map digital signal to a voltage
-        v = (x + (self.dac_min_max)) / (2 * self.dac_min_max)
-        v = v / torch.sqrt(torch.mean(torch.square(v))) * 10 ** (self.power_dbfs / 20)  # normalize power
+        v = x / torch.sqrt(torch.mean(torch.square(x))) * 10 ** (self.power_dbfs / 20)  # normalize power
+        v = v * self.v_pp
 
         # Run lpf
         v_lp = self.lpf.forward(v)
         
-        return v_lp
+        return v_lp + self.v_bias
 
     def eval(self, x):
         # Map digital signal to a voltage
-        v = (x + (self.dac_min_max)) / (2 * self.dac_min_max)
-        v = v / torch.sqrt(torch.mean(torch.square(v))) * 10 ** (self.power_dbfs / 20)  # normalize power
-
-        if torch.any(v > 1.0) or torch.any(v < 0.0):
+        v = x / torch.sqrt(torch.mean(torch.square(x))) * 10 ** (self.power_dbfs / 20)  # normalize power
+        if torch.any(v > 1.0) or torch.any(v < -1.0):
             print(f"WARNING: Over/underflow in DAC (min: {v.min()}, max: {v.max()})")
+
+        v = v * self.v_pp
 
         if self.bit_resolution:
             v = quantize(v, self.bit_resolution)
 
-        print(f"DAC: Power in digital domain: {10.0 * torch.log10(torch.mean(torch.square(v)))} [dBFS]")
+        print(f"DAC: Power in voltage domain: {10.0 * torch.log10(torch.mean(torch.square(v)) / 1e-3)} [dBm]")
 
         # Run lpf
         v_lp = self.lpf.forward_numpy(v)
         
-        return v_lp
+        return v_lp + self.v_bias
 
 
 class AnalogToDigitalConverter(object):

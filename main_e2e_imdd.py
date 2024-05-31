@@ -46,12 +46,12 @@ if __name__ == "__main__":
     eval_dac_bitres = 5
     use_1clr = True
 
+    dac_voltage_pp = 3.0
+    dac_voltage_bias = -1.5
+
     # Configuration of electro absorption modulator
     modulator_type = 'eam'
     modulator_config = {
-        'insertion_loss': 0.0,
-        'pp_voltage': 3.0,
-        'bias_voltage': -1.5,
         'laser_power_dbm': -6.0,
         'linewidth_enhancement': 2.0,
         'linear_absorption': False
@@ -79,7 +79,7 @@ if __name__ == "__main__":
     if learn_tx and learn_rx:
         figtitles = 'both'
 
-    figprefix = f"{FIGPREFIX}_{figtitles}_vpp{modulator_config['pp_voltage']}_chanlength{smf_config['fiber_length']}"
+    figprefix = f"{FIGPREFIX}_{figtitles}_vpp{dac_voltage_pp}_chanlength{smf_config['fiber_length']}"
 
     if not os.path.exists(FIGURE_DIR):
         os.mkdir(FIGURE_DIR)
@@ -100,6 +100,7 @@ if __name__ == "__main__":
     imdd_system = IntensityModulationChannel(sps=samples_per_symbol, baud_rate=baud_rate,
                                              learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                              learn_tx=learn_tx, learn_rx=learn_rx, rrc_rolloff=rrc_rolloff,
+                                             dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
                                              tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                              adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                              dac_bitres=None, adc_bitres=None,
@@ -139,6 +140,7 @@ if __name__ == "__main__":
     imdd_system_ffe = LinearFFEIM(sps=samples_per_symbol, baud_rate=baud_rate,
                                   learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                   rrc_rolloff=rrc_rolloff, ffe_n_taps=25,
+                                  dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
                                   tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                   adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                   dac_bitres=None, adc_bitres=None,
@@ -231,15 +233,13 @@ if __name__ == "__main__":
         alpha_db = imdd_system.modulator.spline_object.evaluate(v)
         ax[0].plot(v, alpha_db)
         ax[0].plot(imdd_system.modulator.x_knee_points, imdd_system.modulator.y_knee_points, 'ro')
-        ax[0].axvline(imdd_system.modulator.voltage_min, color='k', linestyle='--')
-        ax[0].axvline((imdd_system.modulator.voltage_min - imdd_system.modulator.pp_voltage), color='k', linestyle='--')
         ax[0].set_xlabel('Voltage')
         ax[0].set_ylabel('Absorption [dB]')
         ax[0].invert_xaxis()
         ax[0].invert_yaxis()
         ax[0].grid()
 
-        xin = torch.linspace(0.0, 1.0, 1000)
+        xin = torch.linspace(-4.0, 0.0, 1000)
         ax[1].plot(xin, torch.absolute(imdd_system.modulator.forward(xin)))
         ax[1].set_xlabel('Digital signal')
         ax[1].set_ylabel('Optical field amplitude')

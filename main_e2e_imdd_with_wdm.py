@@ -45,13 +45,12 @@ if __name__ == "__main__":
     adc_bitres = 5
     dac_bitres = 5
     use_1clr = True
+    dac_voltage_pp = 3.0
+    dac_voltage_bias = -1.5
 
     # Configuration of electro absorption modulator
     modulator_type = 'eam'
     modulator_config = {
-        'insertion_loss': 0.0,
-        'pp_voltage': 3.0,
-        'bias_voltage': -1.5,
         'laser_power_dbm': -6.0,
         'linewidth_enhancement': 2.0,
         'linear_absorption': False
@@ -98,6 +97,7 @@ if __name__ == "__main__":
     joint_tx_rx = JointTxRxIMwithWDM(sps=samples_per_symbol, baud_rate=baud_rate,
                                      learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                      rrc_rolloff=rrc_rolloff,
+                                     dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
                                      tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                      adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                      tx_filter_init_type='rrc', rx_filter_init_type='rrc',
@@ -107,6 +107,7 @@ if __name__ == "__main__":
     ps_sys = PulseShapingIMwithWDM(sps=samples_per_symbol, baud_rate=baud_rate,
                                    learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                    rrc_rolloff=rrc_rolloff,
+                                   dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
                                    tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                    adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                    tx_filter_init_type='rrc', rx_filter_init_type='rrc',
@@ -116,6 +117,7 @@ if __name__ == "__main__":
     rxf_sys = RxFilteringIMwithWDM(sps=samples_per_symbol, baud_rate=baud_rate,
                                    learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                    rrc_rolloff=rrc_rolloff,
+                                   dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
                                    tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                    adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                    tx_filter_init_type='rrc', rx_filter_init_type='rrc',
@@ -125,6 +127,7 @@ if __name__ == "__main__":
     ffe_sys = LinearFFEIMwithWDM(sps=samples_per_symbol, baud_rate=baud_rate,
                                  learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                  rrc_rolloff=rrc_rolloff, ffe_n_taps=35,
+                                 dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
                                  tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                  adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                  tx_filter_init_type='rrc', rx_filter_init_type='rrc',
