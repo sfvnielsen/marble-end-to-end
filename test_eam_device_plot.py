@@ -23,13 +23,13 @@ if __name__ == "__main__":
     bessel_filter_cutoff_hz = (baud_rate * 0.5)
     Ts = 1 / (baud_rate * sps)
 
-    v_pp = 3.0  # peak-to-peak voltage
+    v_pp = 3.5  # peak-to-peak voltage
     insertion_loss_db = 0.0
-    laser_power = 0.0
-    bias = -2.0
+    laser_power_dbm = 0.0
+    bias = None  # DAC will default to a bias of -v_pp / 2
 
     # Create the EAM object
-    eam = MyNonLinearEAM(laser_power_dbm=laser_power,
+    eam = ElectroAbsorptionModulator(laser_power_dbm=laser_power_dbm,
                                      linear_absorption=False)
 
     # Evaluate for a given signal
@@ -54,9 +54,12 @@ if __name__ == "__main__":
 
     # Apply EAM
     x_modulated = eam.forward(v)
+    print(f"Modulator: Laser power {laser_power_dbm} [dBm]")
+    print(f"Modulator: Power at output {10.0 * np.log10(np.average(np.square(np.absolute(x_modulated.detach().numpy()))) / 1e-3)} [dBm]")
 
     # Square law detection
-    x_pd = np.square(np.absolute(x_modulated))
+    x_pd = np.square(np.absolute(x_modulated.numpy()))
+    print(f"Photodiode: Received power {10.0 * np.log10(np.average(x_pd) / 1e-3)} [dBm]")
 
     # Normalize and apply RRC
     y = (x_pd - x_pd.mean()) / x_pd.std()

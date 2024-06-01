@@ -193,12 +193,12 @@ class DigitalToAnalogConverter(object):
     """
         DAC with bandwidth limitation modeled by a Bessel filter
     """
-    def __init__(self, bwl_cutoff, peak_to_peak_voltage, bias_voltage,
-                 fs, bit_resolution=None, bessel_order=5,
+    def __init__(self, bwl_cutoff, peak_to_peak_voltage,
+                 fs, bias_voltage: float | None = None, bit_resolution=None, bessel_order=5,
                  out_power_dbfs=-12, dtype=torch.float64) -> None:
         # Set attributes of DAC
         self.v_pp = peak_to_peak_voltage
-        self.v_bias = bias_voltage
+        self.v_bias = -self.v_pp / 2 if bias_voltage is None else bias_voltage
         self.power_dbfs = out_power_dbfs  # power after signal normalization to leave headroom for peaks
         self.bit_resolution = bit_resolution
 
