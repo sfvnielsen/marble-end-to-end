@@ -33,6 +33,24 @@ class IdealLinearModulator(object):
         y = torch.sqrt(self.laser_power * v)
         self.Plaunch_dbm = 10.0 * torch.log10(torch.mean(torch.square(y)) / 1e-3)
         return y
+    
+
+class MachZehnderModulator(object):
+    """
+        Classic MZM
+
+        Heavily inspired by Edson Porto Silva's OptiCommPy
+        https://github.com/edsonportosilva/OptiCommPy
+
+    """
+    def __init__(self, laser_power_dbm: float, vpi: float = 2.0, vb: float = -0.5) -> None:
+        self.vpi = vpi
+        self.vb = vb
+        self.laser_power = 10 ** (laser_power_dbm / 10) * 1e-3  # [Watt]
+        self.laser_amplitude = np.sqrt(self.laser_power)
+
+    def forward(self, v):
+        return self.laser_amplitude * torch.cos(0.5 / self.vpi * (v + self.vb) * torch.pi)
 
 
 class ElectroAbsorptionModulator(object):

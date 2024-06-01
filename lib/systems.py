@@ -13,7 +13,9 @@ from commpy.filters import rrcosfilter
 
 from .filtering import FIRfilter, BesselFilter, BrickWallFilter, AllPassFilter, filter_initialization
 from .utility import find_max_variance_sample, symbol_sync
-from .devices import ElectroAbsorptionModulator, MyNonLinearEAM, Photodiode, IdealLinearModulator, DigitalToAnalogConverter, AnalogToDigitalConverter
+from .devices import ElectroAbsorptionModulator, MyNonLinearEAM, Photodiode,\
+                     IdealLinearModulator, DigitalToAnalogConverter, AnalogToDigitalConverter,\
+                     MachZehnderModulator
 from .channels import SingleModeFiber
 from .equalization import LinearFeedForwardEqualiser
 
@@ -1144,6 +1146,8 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         # Define modulator
         if modulator_type == 'ideal':
             self.modulator = IdealLinearModulator(laser_power_dbm=modulator_config['laser_power_dbm'])
+        elif modulator_type == 'mzm':
+            self.modulator = MachZehnderModulator(**modulator_config)
         elif modulator_type == 'eam':
             self.modulator = ElectroAbsorptionModulator(**modulator_config)
         elif modulator_type == 'nonlin_eam':

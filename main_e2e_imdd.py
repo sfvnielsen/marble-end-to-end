@@ -222,14 +222,13 @@ if __name__ == "__main__":
              ax)
 
     # Plot voltage-to-absorption function - compare with (Liang and Kahn)
-    v = torch.linspace(-4.0, 0.0, 1000)
+    v = torch.linspace(-dac_voltage_pp/2, dac_voltage_pp/2, 1000) + dac_voltage_bias
     fig, ax = plt.subplots(figsize=FIGSIZE, ncols=2)
-    if modulator_type == 'ideal':
-        ax[0].plot(v, v)
-        xin = torch.linspace(-1.0, 1.0, 1000)
-        ax[1].plot(xin, imdd_system.modulator.forward(xin))
-        fig.suptitle('Ideal modulator...')
-    else:
+    if modulator_type == 'mzm' :
+        ax[0].plot(v, 0.5 / imdd_system.modulator.vpi * (v + imdd_system.modulator.vb) * torch.pi)
+        ax[1].plot(v, imdd_system.modulator.forward(v))
+        fig.suptitle('Mach Zehnder')
+    elif 'eam' in modulator_type:
         alpha_db = imdd_system.modulator.spline_object.evaluate(v)
         ax[0].plot(v, alpha_db)
         ax[0].plot(imdd_system.modulator.x_knee_points, imdd_system.modulator.y_knee_points, 'ro')
