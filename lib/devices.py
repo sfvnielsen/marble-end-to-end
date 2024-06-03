@@ -48,9 +48,18 @@ class MachZehnderModulator(object):
         self.vb = vb
         self.laser_power = 10 ** (laser_power_dbm / 10) * 1e-3  # [Watt]
         self.laser_amplitude = np.sqrt(self.laser_power)
+        self.Plaunch_dbm = None
+
+    def get_launch_power_dbm(self):
+        if self.Plaunch_dbm is None:
+            raise Exception("Launch power has not been calculated yet!")
+
+        return self.Plaunch_dbm
 
     def forward(self, v):
-        return self.laser_amplitude * torch.cos(0.5 / self.vpi * (v + self.vb) * torch.pi)
+        y = self.laser_amplitude * torch.cos(0.5 / self.vpi * (v + self.vb) * torch.pi)
+        self.Plaunch_dbm = 10.0 * torch.log10(torch.mean(torch.square(y)) / 1e-3)
+        return y
 
 
 class ElectroAbsorptionModulator(object):
