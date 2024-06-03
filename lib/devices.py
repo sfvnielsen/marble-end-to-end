@@ -43,15 +43,14 @@ class MachZehnderModulator(object):
         https://github.com/edsonportosilva/OptiCommPy
 
     """
-    def __init__(self, laser_power_dbm, vpi, vb) -> None:
+    def __init__(self, laser_power_dbm: float, vpi: float = 2.0, vb: float = -0.5) -> None:
         self.vpi = vpi
         self.vb = vb
         self.laser_power = 10 ** (laser_power_dbm / 10) * 1e-3  # [Watt]
         self.laser_amplitude = np.sqrt(self.laser_power)
 
     def forward(self, v):
-        # FIXME: Assumes that v is what?
-        return self.laser_amplitude * np.cos(0.5 / self.vpi * (v + self.vb) * torch.pi)
+        return self.laser_amplitude * torch.cos(0.5 / self.vpi * (v + self.vb) * torch.pi)
 
 
 class ElectroAbsorptionModulator(object):
