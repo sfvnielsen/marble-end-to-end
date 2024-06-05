@@ -23,10 +23,9 @@ if __name__ == "__main__":
     bessel_filter_cutoff_hz = (baud_rate * 0.5)
     Ts = 1 / (baud_rate * sps)
 
-    v_pp = 3.5  # peak-to-peak voltage
-    insertion_loss_db = 0.0
+    v_pp = 2.5  # peak-to-peak voltage
     laser_power_dbm = 0.0
-    bias = None  # DAC will default to a bias of -v_pp / 2
+    bias = None  # DAC will default to a bias of -(2 v_pp / 3)
 
     # Create the EAM object
     eam = ElectroAbsorptionModulator(laser_power_dbm=laser_power_dbm,
@@ -44,7 +43,8 @@ if __name__ == "__main__":
     # Convert to voltage
     dac = DigitalToAnalogConverter(bessel_filter_cutoff_hz, peak_to_peak_voltage=v_pp,
                                    bias_voltage=bias,
-                                   fs=1/Ts, out_power_dbfs=-12)
+                                   peak_to_peak_constellation=(np.max(pam_constellation) - np.min(pam_constellation)) / np.sqrt(sps),
+                                   fs=1/Ts)
     v = dac.eval(torch.from_numpy(x))
     vmin, vmax = v.min(), v.max()
 

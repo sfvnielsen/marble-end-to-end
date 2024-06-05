@@ -46,20 +46,20 @@ if __name__ == "__main__":
     eval_dac_bitres = 5
     use_1clr = True
 
-    dac_voltage_pp = 3.0
+    dac_voltage_pp = 1.5
     dac_voltage_bias = None
 
     # Configuration of electro absorption modulator
     modulator_type = 'eam'
     modulator_config = {
-        'laser_power_dbm': -6.0,
+        'laser_power_dbm': -4.0,
         'linewidth_enhancement': 2.0,
         'linear_absorption': False
     }
 
     # Channel configuration - single model fiber
     smf_config = {
-        'fiber_length': 1.0,
+        'fiber_length': 0.0,
         'attenuation': 0.0,
         'carrier_wavelength': 1270,
         'zero_dispersion_wavelength': 1310,
@@ -222,7 +222,8 @@ if __name__ == "__main__":
              ax)
 
     # Plot voltage-to-absorption function - compare with (Liang and Kahn)
-    v = torch.linspace(-dac_voltage_pp/2, dac_voltage_pp/2, 1000) + dac_voltage_bias
+    v = torch.linspace(-imdd_system.dac.v_pp/2, imdd_system.dac.v_pp/2, 1000) + imdd_system.dac.v_bias
+
     fig, ax = plt.subplots(figsize=FIGSIZE, ncols=2)
     if modulator_type == 'mzm' :
         ax[0].plot(v, 0.5 / imdd_system.modulator.vpi * (v + imdd_system.modulator.vb) * torch.pi)
@@ -238,9 +239,8 @@ if __name__ == "__main__":
         ax[0].invert_yaxis()
         ax[0].grid()
 
-        xin = torch.linspace(-4.0, 0.0, 1000)
-        ax[1].plot(xin, torch.absolute(imdd_system.modulator.forward(xin)))
-        ax[1].set_xlabel('Digital signal')
+        ax[1].plot(v, torch.absolute(imdd_system.modulator.forward(v)))
+        ax[1].set_xlabel('Voltage')
         ax[1].set_ylabel('Optical field amplitude')
         ax[1].grid()
 

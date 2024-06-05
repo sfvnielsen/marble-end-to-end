@@ -220,13 +220,14 @@ class DigitalToAnalogConverter(object):
     """
         DAC with bandwidth limitation modeled by a Bessel filter
     """
-    def __init__(self, bwl_cutoff, peak_to_peak_voltage,
+    def __init__(self, bwl_cutoff, peak_to_peak_voltage, peak_to_peak_constellation,
                  fs, bias_voltage: float | None = None, bit_resolution=None, bessel_order=5,
-                 out_power_dbfs=-12, dtype=torch.float64) -> None:
+                 dtype=torch.float64) -> None:
         # Set attributes of DAC
         self.v_pp = peak_to_peak_voltage
-        self.v_bias = -self.v_pp / 2 if bias_voltage is None else bias_voltage
-        self.power_dbfs = out_power_dbfs  # power after signal normalization to leave headroom for peaks
+        self.v_bias = -(2 * self.v_pp / 3) if bias_voltage is None else bias_voltage
+        self.pp_const = peak_to_peak_constellation  # distance between largest and smallest constellation point
+        self.pp_norm = self.pp_const / self.v_pp
         self.bit_resolution = bit_resolution
 
         # Initialize bessel filter
@@ -246,8 +247,8 @@ class DigitalToAnalogConverter(object):
 
     def forward(self, x):
         # Map digital signal to a voltage
-        v = x / torch.sqrt(torch.mean(torch.square(x))) * 10 ** (self.power_dbfs / 20)  # normalize power
-        v = v * self.v_pp
+        # x is assumed to have self.pp_const between largest and smallest constellation point
+        v = x / self.pp_norm
 
         # Run lpf
         v_lp = self.lpf.forward(v)
@@ -256,11 +257,8 @@ class DigitalToAnalogConverter(object):
 
     def eval(self, x):
         # Map digital signal to a voltage
-        v = x / torch.sqrt(torch.mean(torch.square(x))) * 10 ** (self.power_dbfs / 20)  # normalize power
-        if torch.any(v > 1.0) or torch.any(v < -1.0):
-            print(f"WARNING: Over/underflow in DAC (min: {v.min()}, max: {v.max()})")
-
-        v = v * self.v_pp
+        # x is assumed to have self.pp_const between largest and smallest constellation point
+        v = x / self.pp_norm
 
         if self.bit_resolution:
             v = quantize(v, self.bit_resolution)

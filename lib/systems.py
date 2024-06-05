@@ -1136,6 +1136,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
 
         # Digital-to-analog (DAC) converter
         self.dac = DigitalToAnalogConverter(bias_voltage=dac_voltage_bias, peak_to_peak_voltage=dac_voltage_pp,
+                                            peak_to_peak_constellation=(np.max(constellation) - np.min(constellation)) / np.sqrt(self.sps),
                                             bwl_cutoff=None if dac_bwl_relative_cutoff is None else info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts,
                                             bessel_order=5, bit_resolution=dac_bitres)
 
@@ -1250,6 +1251,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         # Apply bandwidth limitation in the DAC
         self.dac.set_bitres(eval_config.get('dac_bitres', None))
         v = self.dac.eval(x)
+        print(f"DAC: Voltage min {v.min()}, Voltage max {v.max()}")
 
         # Apply EAM
         x_eam = self.modulator.forward(v)
@@ -1263,6 +1265,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         y = self.photodiode.forward(x_chan)
         self.set_energy_pr_symbol(self.photodiode.Es)
         print(f"Photodiode: Received power {self.photodiode.get_received_power_dbm()} [dBm]")
+        print(f"Photodiode: Received Es: {10.0 * np.log10(self.photodiode.Es / 1e-3)} [dBm]")
 
         # Apply bandwidth limitation in the ADC
         self.adc.set_bitres(eval_config.get('adc_bitres', None))
