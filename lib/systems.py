@@ -1441,11 +1441,12 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  learn_rx, learn_tx, rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_voltage_pp, dac_voltage_bias,
+                 dac_voltage_pp, dac_voltage_bias, wdm_channel_spacing_hz,
                  modulator_type='eam', equaliser_config: dict | None = None,
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
-                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
+                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000),
+                 torch_seed=0) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
                          learn_rx=learn_rx, learn_tx=learn_tx, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
@@ -1456,8 +1457,60 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          rrc_rolloff=rrc_rolloff, dac_bitres=None, adc_bitres=None,
                          eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval)
+
+        self.wdm_n_channels = 3  # always three channels during training
+        self.wdm_channel_spacing_hz = wdm_channel_spacing_hz
+        self.torch_seed = torch_seed  # used for generating interferer channels
         
+    def forward(self, symbols_up: torch.TensorType):
+        rng_gen = torch.random.manual_seed(self.torch_seed)
+        symbols_up_chan = torch.zeros((symbols_up.shape[0], self.wdm_n_channels), dtype=symbols_up.dtype)
+        symbols_up_chan[::, self.wdm_n_channels // 2] = symbols_up
+        channels_to_fill = [i for i in range(self.wdm_n_channels) if i != self.wdm_n_channels // 2]  # all except middle
+        for cf in channels_to_fill:
+            symbols_up_chan[0::self.sps, cf] = symbols_up[::self.sps][torch.randperm(symbols_up.shape[0] // self.sps, generator=rng_gen)]
         
+        # Prepare WDM channel
+        tx_wdm = torch.zeros((symbols_up_chan.shape[0], ), dtype=torch.complex128)
+        channel_fq_grid = torch.arange(-np.floor(self.wdm_n_channels / 2), np.floor(self.wdm_n_channels / 2) + 1, 1) * self.wdm_channel_spacing_hz
+        
+        for c in range(self.wdm_n_channels):
+            x = self.pulse_shaper.forward(symbols_up_chan[:, c])
+
+            # Apply bandwidth limitation in the DAC
+            v = self.dac.forward(x)
+
+            # Apply EAM
+            x_eam = self.modulator.forward(v)
+
+            tx_wdm += x_eam * torch.exp(1j * 2 * torch.pi * (channel_fq_grid[c] * self.Ts) * torch.arange(0, x.shape[0], dtype=torch.float64))
+        
+        # Apply SMF
+        x_smf = self.channel.forward(tx_wdm)
+
+        # Brick-wall filter (selecting middle channel)
+        x_chan = self.eval_channel_selection(x_smf, self.wdm_channel_spacing_hz)  # FIXME: Should this be slightly larger than bandwidth
+
+        # Photodiode
+        y = self.photodiode.forward(x_chan)
+        
+        # Apply bandwidth limitation in the ADC
+        y_lp = self.adc.forward(y)
+
+        # Normalize
+        y_norm = (y_lp - y_lp.mean()) / (y_lp.std())
+
+        # Apply rx filter - applies stride inside filter (outputs sps = 1, if no equalsier)
+        rx_filter_out = self.rx_filter.forward(y_norm)
+
+        # Apply equaliser
+        rx_eq_out = self.equaliser.forward(rx_filter_out)
+
+        # Power normalize and rescale to constellation
+        rx_eq_out = rx_eq_out / torch.sqrt(torch.mean(torch.square(rx_eq_out))) * self.constellation_scale
+
+        return rx_eq_out        
+
     def eval_tx(self, symbols_up: torch.TensorType, n_channels: int, channel_spacing_hz: float,
                 batch_size: int, dac_bitres: int | None = None, torch_seed: int = 0):
         # Generate interferer symbols - randomly permute the input sequence
@@ -1530,14 +1583,13 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
         x_chan = ifft(H) * 1 / self.Ts
         return x_chan
 
-
     # FIXME: Replace this with the acutal evaluate call.
     def _eval(self, symbols_up: torch.TensorType, batch_size: int, **eval_config):
         # Fetch config
         decimate = eval_config.get('decimate', True)
-        channel_spacing_hz = eval_config.get('channel_spacing_hz')
-        n_channels = eval_config.get('n_channels', 3)
-        torch_seed = eval_config.get('seed', 0)
+        channel_spacing_hz = eval_config.get('channel_spacing_hz', self.wdm_channel_spacing_hz)
+        n_channels = eval_config.get('n_channels', self.wdm_n_channels)
+        torch_seed = eval_config.get('seed', self.torch_seed)
         assert (n_channels + 1) % 2 == 0
 
         # Apply Tx (including generating interferer symbols and WDM signal)
@@ -1567,19 +1619,22 @@ class PulseShapingIMwithWDM(IntensityModulationChannelwithWDM):
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_voltage_pp, dac_voltage_bias,
+                 dac_voltage_pp, dac_voltage_bias, wdm_channel_spacing_hz,
                  modulator_type=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
-                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
+                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000),
+                 torch_seed=0) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
                          learn_rx=False, learn_tx=True, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                          dac_voltage_pp=dac_voltage_pp, dac_voltage_bias=dac_voltage_bias,
+                         wdm_channel_spacing_hz=wdm_channel_spacing_hz,
                          modulator_type=modulator_type, equaliser_config=None,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
-                         rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval)
+                         rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
+                         torch_seed=torch_seed)
 
 
 class RxFilteringIMwithWDM(IntensityModulationChannelwithWDM):
@@ -1592,19 +1647,22 @@ class RxFilteringIMwithWDM(IntensityModulationChannelwithWDM):
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_voltage_pp, dac_voltage_bias,
+                 dac_voltage_pp, dac_voltage_bias, wdm_channel_spacing_hz,
                  modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
-                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
+                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000),
+                 torch_seed=0) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
                          learn_rx=True, learn_tx=False, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                          dac_voltage_pp=dac_voltage_pp, dac_voltage_bias=dac_voltage_bias,
+                         wdm_channel_spacing_hz=wdm_channel_spacing_hz,
                          modulator_type=modulator_type, equaliser_config=None,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
-                         rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval)
+                         rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
+                         torch_seed=torch_seed)
 
 
 class JointTxRxIMwithWDM(IntensityModulationChannelwithWDM):
@@ -1617,19 +1675,22 @@ class JointTxRxIMwithWDM(IntensityModulationChannelwithWDM):
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_voltage_pp, dac_voltage_bias,
+                 dac_voltage_pp, dac_voltage_bias, wdm_channel_spacing_hz,
                  modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
-                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
+                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000),
+                 torch_seed=0) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
                          learn_rx=True, learn_tx=True, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                          dac_voltage_pp=dac_voltage_pp, dac_voltage_bias=dac_voltage_bias,
+                         wdm_channel_spacing_hz=wdm_channel_spacing_hz,
                          modulator_type=modulator_type, equaliser_config=None,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
-                         rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval)
+                         rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
+                         torch_seed=torch_seed)
 
 
 class LinearFFEIMwithWDM(IntensityModulationChannelwithWDM):
@@ -1642,16 +1703,19 @@ class LinearFFEIMwithWDM(IntensityModulationChannelwithWDM):
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length, ffe_n_taps: int,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_voltage_pp, dac_voltage_bias,
+                 dac_voltage_pp, dac_voltage_bias, wdm_channel_spacing_hz,
                  modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
-                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
+                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000),
+                 torch_seed=0) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
                          learn_rx=False, learn_tx=False, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                          dac_voltage_pp=dac_voltage_pp, dac_voltage_bias=dac_voltage_bias,
+                         wdm_channel_spacing_hz=wdm_channel_spacing_hz,
                          modulator_type=modulator_type, equaliser_config={'n_taps': ffe_n_taps},
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
-                         rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval)
+                         rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
+                         torch_seed=torch_seed)

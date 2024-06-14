@@ -75,6 +75,7 @@ if __name__ == "__main__":
     }
 
     # WDM config - used during evaluation
+    wdm_channel_spacing_training = baud_rate * 1.5
     wdm_channel_spacings = np.array([baud_rate * 1.05, baud_rate * 1.25, baud_rate * 1.5, baud_rate * 2.0, baud_rate * 3.0])
     wdm_n_channels = 3
 
@@ -98,6 +99,7 @@ if __name__ == "__main__":
                                      learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                      rrc_rolloff=rrc_rolloff,
                                      dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
+                                     wdm_channel_spacing_hz=wdm_channel_spacing_training,
                                      tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                      adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                      tx_filter_init_type='rrc', rx_filter_init_type='rrc',
@@ -108,6 +110,7 @@ if __name__ == "__main__":
                                    learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                    rrc_rolloff=rrc_rolloff,
                                    dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
+                                   wdm_channel_spacing_hz=wdm_channel_spacing_training,
                                    tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                    adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                    tx_filter_init_type='rrc', rx_filter_init_type='rrc',
@@ -118,6 +121,7 @@ if __name__ == "__main__":
                                    learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                    rrc_rolloff=rrc_rolloff,
                                    dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
+                                   wdm_channel_spacing_hz=wdm_channel_spacing_training,
                                    tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                    adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                    tx_filter_init_type='rrc', rx_filter_init_type='rrc',
@@ -128,6 +132,7 @@ if __name__ == "__main__":
                                  learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                  rrc_rolloff=rrc_rolloff, ffe_n_taps=35,
                                  dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
+                                 wdm_channel_spacing_hz=wdm_channel_spacing_training,
                                  tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                  adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                  tx_filter_init_type='rrc', rx_filter_init_type='rrc',

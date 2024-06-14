@@ -46,7 +46,7 @@ if __name__ == "__main__":
     eval_dac_bitres = 5
     use_1clr = True
 
-    dac_voltage_pp = 1.5
+    dac_voltage_pp = 2.0
     dac_voltage_bias = None
 
     # Configuration of electro absorption modulator
@@ -59,7 +59,7 @@ if __name__ == "__main__":
 
     # Channel configuration - single model fiber
     smf_config = {
-        'fiber_length': 0.0,
+        'fiber_length': 0.5,
         'attenuation': 0.0,
         'carrier_wavelength': 1270,
         'zero_dispersion_wavelength': 1310,
@@ -200,6 +200,11 @@ if __name__ == "__main__":
         ax[1, i].set_ylim(filter_amp_min_db, ymax)
 
     plt.tight_layout()
+    
+    if save_figures:
+        fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_filters.eps"), format='eps')
+        fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_filters.png"), dpi=DPI)
+
 
     # Plot distribution of symbols
     fig, ax = plt.subplots(figsize=FIGSIZE)
@@ -217,8 +222,8 @@ if __name__ == "__main__":
     print(f"95pct confidence (+-) {ser_mf_conf}")
 
     fig, ax = plt.subplots(figsize=FIGSIZE)
-    plot_bar(['E2E', 'Theory'],
-             [np.log10(x) for x in [ser, ser_theory]],
+    plot_bar(['E2E', 'RRC+FFE', 'Theory'],
+             [np.log10(x) for x in [ser, ser_ffe, ser_theory]],
              ax)
 
     # Plot voltage-to-absorption function - compare with (Liang and Kahn)
