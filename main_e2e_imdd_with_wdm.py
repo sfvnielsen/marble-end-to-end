@@ -32,14 +32,15 @@ FIGPREFIX = 'e2e_imdd_wdm'
 if __name__ == "__main__":
     # Define simulation parameters
     save_figures = True
+    figprefix = f"{FIGPREFIX}"
     n_symbols_train = int(1e6)
     n_symbols_val = int(1e6)  # number of symbols used for SER calculation
     samples_per_symbol = 8
     baud_rate = int(100e9)
     mod_order = 4  # PAM
     rrc_rolloff = 0.01
-    learn_tx, tx_filter_length = True, 51
-    learn_rx, rx_filter_length = True, 51
+    learn_tx, tx_filter_length = True, 65
+    learn_rx, rx_filter_length = True, 65
     dac_bwl_relative_cutoff = 0.9  # low-pass filter cuttoff relative to information bandwidth
     adc_bwl_relative_cutoff = 0.9
     adc_bitres = 5
@@ -51,7 +52,7 @@ if __name__ == "__main__":
     # Configuration of electro absorption modulator
     modulator_type = 'eam'
     modulator_config = {
-        'laser_power_dbm': -6.0,
+        'laser_power_dbm': -4.0,
         'linewidth_enhancement': 2.0,
         'linear_absorption': False
     }
@@ -214,5 +215,11 @@ if __name__ == "__main__":
 
     for this_ax in ax:
         this_ax.set_ylim(*(filter_amp_min_db, None))
+    
+    fig.tight_layout()
+
+    if save_figures:
+        fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_filters.eps"), format='eps')
+        fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_filters.png"), dpi=DPI)
 
     plt.show()

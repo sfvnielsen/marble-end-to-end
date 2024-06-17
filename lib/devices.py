@@ -14,7 +14,7 @@ from .filtering import BesselFilter, AllPassFilter
 class IdealLinearModulator(object):
     """
         Ideal linear modulator
-        
+
     """
     def __init__(self, laser_power_dbm):
         # Parse input arguments
@@ -33,7 +33,7 @@ class IdealLinearModulator(object):
         y = torch.sqrt(self.laser_power * v)
         self.Plaunch_dbm = 10.0 * torch.log10(torch.mean(torch.square(y)) / 1e-3)
         return y
-    
+
 
 class MachZehnderModulator(object):
     """
@@ -95,7 +95,7 @@ class ElectroAbsorptionModulator(object):
 
         # Initialize launch power
         self.Plaunch_dbm = None
-    
+
     def get_launch_power_dbm(self):
         if self.Plaunch_dbm is None:
             raise Exception("Launch power has not been calculated yet!")
@@ -147,7 +147,7 @@ class Photodiode(object):
 
     def __init__(self, bandwidth, Fs, sps, responsivity=1.0, temperature=20.0, dark_current=10e-9,
                  impedance_load=50.0) -> None:
-        
+
         # Add constructor arguments as attributes
         self.responsivity = responsivity
         self.temperature = temperature
@@ -156,7 +156,7 @@ class Photodiode(object):
         self.bandwidth = bandwidth
         self.Fs = Fs
         self.sps = sps  # used for calculation energy-pr-symbol
-        
+
         # Calculation of thermal noise std
         var_thermal = 4 * self.BOLTZMANN * (self.temperature + 273.15) * \
             self.bandwidth / self.impedance_load
@@ -185,7 +185,7 @@ class Photodiode(object):
         thermal_noise = self.thermal_noise_std * torch.randn_like(x2)
 
         # Calculate shot_noise variance based on avg. signal power
-        var_shot = 2 * self.ELECTRON_CHARGE * (self.responsivity * torch.mean(torch.square(torch.real(torch.absolute(x)))) + 
+        var_shot = 2 * self.ELECTRON_CHARGE * (self.responsivity * torch.mean(torch.square(torch.real(torch.absolute(x)))) +
                                                self.dark_current) * self.bandwidth
 
         shot_noise = torch.sqrt(self.Fs * (var_shot / (2 * self.bandwidth))) * torch.randn_like(x2)
@@ -199,20 +199,20 @@ class Photodiode(object):
 
 def quantize(signal, bits):
     """
-        
+
         Written almost entirely by Microsoft Copilot
     """
     max_int = 2**bits - 1
-    
+
     # Normalize the float array to the range [0, 1]
     normalized = (signal - torch.min(signal)) / (torch.max(signal) - torch.min(signal))
-    
+
     # Scale to the quantization levels and round to nearest integer
     quantized = torch.round(normalized * max_int)
-    
+
     # Map back to the original range
     dequantized = quantized * (torch.max(signal) - torch.min(signal)) / max_int + torch.min(signal)
-    
+
     return dequantized
 
 
@@ -220,14 +220,25 @@ class DigitalToAnalogConverter(object):
     """
         DAC with bandwidth limitation modeled by a Bessel filter
     """
-    def __init__(self, bwl_cutoff, peak_to_peak_voltage, peak_to_peak_constellation,
+    def __init__(self, bwl_cutoff, peak_to_peak_voltage, peak_to_peak_constellation: float | str,
                  fs, bias_voltage: float | None = None, bit_resolution=None, bessel_order=5,
                  dtype=torch.float64) -> None:
         # Set attributes of DAC
         self.v_pp = peak_to_peak_voltage
         self.v_bias = -(2 * self.v_pp / 3) if bias_voltage is None else bias_voltage
         self.pp_const = peak_to_peak_constellation  # distance between largest and smallest constellation point
-        self.pp_norm = self.pp_const / self.v_pp
+        self.voltage_norm_funcp = self._vol_norm_const
+
+        if isinstance(self.pp_const, str) and self.pp_const == "minmax":
+            self.voltage_norm_funcp = self._vol_norm_minmax
+            self.pp_norm = None
+            print(f"DAC: minmax mode. WARNING! This is not nicely differentiable.")
+        elif isinstance(self.pp_const, float):
+            self.pp_norm = self.pp_const / self.v_pp
+            self.voltage_norm_funcp = self._vol_norm_const
+        else:
+            raise Exception(f"Failed parsing 'peak_to_peak_constellation' argument ({peak_to_peak_constellation})")
+
         self.bit_resolution = bit_resolution
 
         # Initialize bessel filter
@@ -238,27 +249,35 @@ class DigitalToAnalogConverter(object):
     def set_bitres(self, new_bitres):
         assert isinstance(new_bitres, int) or new_bitres is None
         self.bit_resolution = new_bitres
-    
+
     def get_sample_delay(self):
         return self.lpf.get_sample_delay()
-    
+
     def get_lpf_filter(self):
         return self.lpf.get_filters()
 
+    def voltage_normalization(self, x: torch.TensorType) -> torch.TensorType:
+        return self.voltage_norm_funcp(x)
+
+    def _vol_norm_minmax(self, x: torch.TensorType):
+        return self.v_pp * (x - x.min()) / (x.max() - x.min())
+
+    def _vol_norm_const(self, x: torch.TensorType):
+        # x is assumed to have self.pp_const between largest and smallest constellation point
+        return x / self.pp_norm
+
     def forward(self, x):
         # Map digital signal to a voltage
-        # x is assumed to have self.pp_const between largest and smallest constellation point
-        v = x / self.pp_norm
+        v = self.voltage_normalization(x)
 
         # Run lpf
         v_lp = self.lpf.forward(v)
-        
+
         return v_lp + self.v_bias
 
     def eval(self, x):
         # Map digital signal to a voltage
-        # x is assumed to have self.pp_const between largest and smallest constellation point
-        v = x / self.pp_norm
+        v = self.voltage_normalization(x)
 
         if self.bit_resolution:
             v = quantize(v, self.bit_resolution)
@@ -267,7 +286,7 @@ class DigitalToAnalogConverter(object):
 
         # Run lpf
         v_lp = self.lpf.forward_numpy(v)
-        
+
         return v_lp + self.v_bias
 
 
@@ -284,7 +303,7 @@ class AnalogToDigitalConverter(object):
         self.lpf = AllPassFilter()
         if bwl_cutoff is not None:
             self.lpf = BesselFilter(bessel_order=bessel_order, cutoff_hz=bwl_cutoff, fs=fs, dtype=dtype)
-    
+
     def set_bitres(self, new_bitres):
         assert isinstance(new_bitres, int) or new_bitres is None
         self.bit_resolution = new_bitres
@@ -298,7 +317,7 @@ class AnalogToDigitalConverter(object):
     def forward(self, v):
         # Run lpf
         x_lp = self.lpf.forward(v)
-        
+
         return x_lp
 
     def eval(self, v):
