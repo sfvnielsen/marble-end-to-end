@@ -1134,9 +1134,20 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         # Define bandwidth limitation filters - low pass filter with cutoff relative to bw of baseband
         info_bw = 0.5 * baud_rate
 
+        # Estimate the min-max value of an RRC filter empirically and apply that as normalization in the DAC
+        __, g = rrcosfilter(tx_filter_length + 1, rrc_rolloff, self.sym_length, 1 / self.Ts)
+        g = g[1::]  # delete first element to make filter odd length
+        g = g / np.linalg.norm(g)
+        randomgen = np.random.default_rng(0)
+        a = randomgen.choice(constellation, size=(int(1e5),), replace=True)
+        aup = np.zeros((len(a) * self.sps, ))
+        aup[::self.sps] = a
+        x = np.convolve(aup, g)
+        absmax = np.abs(np.max(x))
+
         # Digital-to-analog (DAC) converter
         self.dac = DigitalToAnalogConverter(bias_voltage=dac_voltage_bias, peak_to_peak_voltage=dac_voltage_pp,
-                                            peak_to_peak_constellation=(np.max(constellation) - np.min(constellation)) / np.sqrt(self.sps) if not dac_minmax_norm else 'minmax',
+                                            peak_to_peak_constellation=2*absmax if not dac_minmax_norm else 'minmax',
                                             bwl_cutoff=None if dac_bwl_relative_cutoff is None else info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts,
                                             bessel_order=5, bit_resolution=dac_bitres)
 
@@ -1423,9 +1434,7 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
         “Geometric Shaping for Distortion-Limited Intensity Modulation/Direct Detection Data Center Links,”
         IEEE Photonics Journal, vol. 15, no. 6, pp. 1–17, 2023, doi: 10.1109/JPHOT.2023.3335398.
 
-        with wavelength division multiplexing (WDM)
-        
-        FIXME: WDM only implemnted during evaluation!
+        with wavelength division multiplexing (WDM). 
 
         The system implements an electro absorption modulator (EAM), based on
         absorption curves derived from the above reference.

@@ -46,8 +46,8 @@ if __name__ == "__main__":
     adc_bitres = 5
     dac_bitres = 5
     use_1clr = True
-    dac_voltage_pp = 2.5
-    dac_voltage_bias = None
+    dac_voltage_pp = 2.0
+    dac_voltage_bias = -dac_voltage_pp/2
 
     # Configuration of electro absorption modulator
     modulator_type = 'eam'

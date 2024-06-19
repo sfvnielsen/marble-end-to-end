@@ -234,7 +234,7 @@ class DigitalToAnalogConverter(object):
             self.pp_norm = None
             print(f"DAC: minmax mode. WARNING! This is not nicely differentiable.")
         elif isinstance(self.pp_const, float):
-            self.pp_norm = self.pp_const / self.v_pp
+            self.pp_norm = self.pp_const
             self.voltage_norm_funcp = self._vol_norm_const
         else:
             raise Exception(f"Failed parsing 'peak_to_peak_constellation' argument ({peak_to_peak_constellation})")
@@ -245,6 +245,9 @@ class DigitalToAnalogConverter(object):
         self.lpf = AllPassFilter()
         if bwl_cutoff is not None:
             self.lpf = BesselFilter(bessel_order=bessel_order, cutoff_hz=bwl_cutoff, fs=fs, dtype=dtype)
+
+    def _clamp_voltage(self, x, clamping_value=0.5):
+        return torch.clamp(x, -clamping_value, clamping_value)
 
     def set_bitres(self, new_bitres):
         assert isinstance(new_bitres, int) or new_bitres is None
@@ -257,10 +260,10 @@ class DigitalToAnalogConverter(object):
         return self.lpf.get_filters()
 
     def voltage_normalization(self, x: torch.TensorType) -> torch.TensorType:
-        return self.voltage_norm_funcp(x)
+        return self._clamp_voltage(self.voltage_norm_funcp(x))
 
     def _vol_norm_minmax(self, x: torch.TensorType):
-        return self.v_pp * (x - x.min()) / (x.max() - x.min())
+        return (x - x.min()) / (x.max() - x.min())
 
     def _vol_norm_const(self, x: torch.TensorType):
         # x is assumed to have self.pp_const between largest and smallest constellation point
@@ -268,7 +271,7 @@ class DigitalToAnalogConverter(object):
 
     def forward(self, x):
         # Map digital signal to a voltage
-        v = self.voltage_normalization(x)
+        v = self.v_pp * self.voltage_normalization(x)
 
         # Run lpf
         v_lp = self.lpf.forward(v)
@@ -277,7 +280,7 @@ class DigitalToAnalogConverter(object):
 
     def eval(self, x):
         # Map digital signal to a voltage
-        v = self.voltage_normalization(x)
+        v = self.v_pp * self.voltage_normalization(x)
 
         if self.bit_resolution:
             v = quantize(v, self.bit_resolution)
