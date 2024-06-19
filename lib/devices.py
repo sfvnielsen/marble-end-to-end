@@ -221,13 +221,21 @@ class DigitalToAnalogConverter(object):
         DAC with bandwidth limitation modeled by a Bessel filter
     """
     def __init__(self, bwl_cutoff, peak_to_peak_voltage, peak_to_peak_constellation: float | str,
-                 fs, bias_voltage: float | None = None, bit_resolution=None, bessel_order=5,
+                 fs, bias_voltage: float | str ='negative_vpp', bit_resolution=None, bessel_order=5,
                  dtype=torch.float64) -> None:
         # Set attributes of DAC
         self.v_pp = peak_to_peak_voltage
-        self.v_bias = -(2 * self.v_pp / 3) if bias_voltage is None else bias_voltage
         self.pp_const = peak_to_peak_constellation  # distance between largest and smallest constellation point
         self.voltage_norm_funcp = self._vol_norm_const
+
+        self.v_bias = 0.0
+        if isinstance(bias_voltage, str) and bias_voltage == "negative_vpp":
+            # Move the voltages to negative domain with max value 0 (based on the Vpp)
+            self.v_bias = -self.v_pp/2
+        elif isinstance(bias_voltage, float):
+            self.v_bias = bias_voltage 
+        else:
+            print(f"Unknown voltage bias type {bias_voltage}. Using a bias of 0.0")
 
         if isinstance(self.pp_const, str) and self.pp_const == "minmax":
             self.voltage_norm_funcp = self._vol_norm_minmax
