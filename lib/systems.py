@@ -11,7 +11,7 @@ from scipy.signal import bessel, lfilter, freqz, group_delay
 from scipy.fft import fftshift
 from commpy.filters import rrcosfilter
 
-from .filtering import FIRfilter, BesselFilter, BrickWallFilter, AllPassFilter, filter_initialization
+from .filtering import FIRfilter, BesselFilter, BrickWallFilter, AllPassFilter, GaussianFqFilter, filter_initialization
 from .utility import find_max_variance_sample, symbol_sync
 from .devices import ElectroAbsorptionModulator, MyNonLinearEAM, Photodiode,\
                      IdealLinearModulator, DigitalToAnalogConverter, AnalogToDigitalConverter,\
@@ -780,9 +780,243 @@ class LinearFFEAWGNwithBWL(BasicAWGNwithBWL):
                          rrc_rolloff=rrc_rolloff,
                          use_brickwall=use_brickwall,
                          use_1clr=use_1clr)
-    
+
     def get_equaliser_filter(self):
         return self.equaliser.filter.get_filter()
+
+
+class BasicAWGNwithBWLandWDM(BasicAWGNwithBWL):
+    """
+        Bandwidth limited AWGN channel with wavelength division multiplexing (WDM)
+    """
+    def __init__(self, sps, esn0_db, baud_rate, learning_rate, batch_size, constellation,
+                 tx_filter_length: int, rx_filter_length: int, adc_bwl_relative_cutoff,
+                 dac_bwl_relative_cutoff, learn_tx: bool, learn_rx: bool,
+                 wdm_channel_spacing_hz, wdm_channel_selection_rel_cutoff,
+                 equaliser_config: dict | None = None, tx_filter_init_type='dirac',
+                 rx_filter_init_type='dirac', print_interval=int(50000), torch_seed=0,
+                 use_brickwall=False, use_1clr=False, rrc_rolloff=0.5) -> None:
+        super().__init__(sps, esn0_db, baud_rate, learning_rate, batch_size, constellation,
+                         tx_filter_length, rx_filter_length, adc_bwl_relative_cutoff,
+                         dac_bwl_relative_cutoff, learn_tx, learn_rx, equaliser_config,
+                         tx_filter_init_type, rx_filter_init_type, print_interval,
+                         use_brickwall, use_1clr, rrc_rolloff)
+        self.wdm_n_channels = 3  # always three channels during training
+        self.wdm_channel_spacing_hz = wdm_channel_spacing_hz
+        self.torch_seed = torch_seed  # used for generating interferer channels
+
+        # Create Gauss filter object for channel selection on Rx side
+        self.channel_selection_filter = GaussianFqFilter(filter_cutoff_hz=(0.5 * self.baud_rate) * wdm_channel_selection_rel_cutoff,
+                                                         order=5,
+                                                         Fs=1/self.Ts)
+
+    def forward(self, symbols_up: torch.TensorType):
+        rng_gen = torch.random.manual_seed(self.torch_seed)
+        symbols_up_chan = torch.zeros((symbols_up.shape[0], self.wdm_n_channels), dtype=symbols_up.dtype)
+        symbols_up_chan[::, self.wdm_n_channels // 2] = symbols_up
+        channels_to_fill = [i for i in range(self.wdm_n_channels) if i != self.wdm_n_channels // 2]  # all except middle
+        for cf in channels_to_fill:
+            symbols_up_chan[0::self.sps, cf] = symbols_up[::self.sps][torch.randperm(symbols_up.shape[0] // self.sps, generator=rng_gen)]
+
+        # Prepare WDM channel
+        tx_wdm = torch.zeros((symbols_up_chan.shape[0], ), dtype=torch.complex128)
+        channel_fq_grid = torch.arange(-np.floor(self.wdm_n_channels / 2), np.floor(self.wdm_n_channels / 2) + 1, 1) * self.wdm_channel_spacing_hz
+
+        for c in range(self.wdm_n_channels):
+            x = self.pulse_shaper.forward(symbols_up_chan[:, c])
+
+            x = x / self.normalization_constant
+
+            # Apply bandwidth limitation in the DAC
+            x_lp = self.dac.forward(x)
+
+            tx_wdm += x_lp * torch.exp(1j * 2 * torch.pi * (channel_fq_grid[c] * self.Ts) * torch.arange(0, x.shape[0], dtype=torch.float64))
+
+        with torch.no_grad():
+            noise_std = self.calculate_noise_std(x_lp)  # just calculate the noise_std based on the last channel
+        y = tx_wdm + noise_std * torch.randn(x_lp.shape)
+
+        # Low-pass filter to select middle channel
+        y_chan = self.channel_selection_filter.forward(y)
+
+        # Apply bandwidth limitation in the ADC
+        y_lp = self.adc.forward(y_chan)
+
+        # Apply rx filter - applies stride inside filter (outputs sps = 1, if no equaliser)
+        rx_filter_out = self.rx_filter.forward(y_lp)
+
+        # Apply equaliser
+        rx_eq_out = self.equaliser.forward(rx_filter_out)
+
+        # Power normalize and rescale to constellation
+        rx_eq_out = rx_eq_out / torch.sqrt(torch.mean(torch.square(rx_eq_out))) * self.constellation_scale
+
+        return rx_eq_out
+    
+    def _eval(self, symbols_up: torch.TensorType, batch_size: int, decimate: bool = True):
+        rng_gen = torch.random.manual_seed(self.torch_seed)
+        symbols_up_chan = torch.zeros((symbols_up.shape[0], self.wdm_n_channels), dtype=symbols_up.dtype)
+        symbols_up_chan[::, self.wdm_n_channels // 2] = symbols_up
+        channels_to_fill = [i for i in range(self.wdm_n_channels) if i != self.wdm_n_channels // 2]  # all except middle
+        for cf in channels_to_fill:
+            symbols_up_chan[0::self.sps, cf] = symbols_up[::self.sps][torch.randperm(symbols_up.shape[0] // self.sps, generator=rng_gen)]
+
+        # Prepare WDM channel
+        tx_wdm = torch.zeros((symbols_up_chan.shape[0], ), dtype=torch.complex128)
+        channel_fq_grid = torch.arange(-np.floor(self.wdm_n_channels / 2), np.floor(self.wdm_n_channels / 2) + 1, 1) * self.wdm_channel_spacing_hz
+
+        for c in range(self.wdm_n_channels):
+            x = self.pulse_shaper.forward_numpy(symbols_up_chan[:, c])
+
+            x = x / self.normalization_constant
+
+            # Apply bandwidth limitation in the DAC
+            x_lp = self.dac.forward_batched(x, batch_size=batch_size)
+
+            tx_wdm += x_lp * torch.exp(1j * 2 * torch.pi * (channel_fq_grid[c] * self.Ts) * torch.arange(0, x.shape[0], dtype=torch.float64))
+
+        with torch.no_grad():
+            noise_std = self.calculate_noise_std(x_lp)  # just calculate the noise_std based on the last channel
+        y = tx_wdm + noise_std * torch.randn(x_lp.shape)
+
+        # Low-pass filter to select middle channel
+        y_chan = self.channel_selection_filter.forward_numpy(y)
+
+        # Apply bandwidth limitation in the ADC
+        y_lp = self.adc.forward_batched(y_chan, batch_size=batch_size)
+
+        # Apply rx filter - applies stride inside filter (outputs sps = 1, if no equalsier)
+        if not decimate:
+            self.rx_filter.set_stride(1)  # output all samples from rx_filter
+        rx_filter_out = self.rx_filter.forward_numpy(y_lp)
+
+        # Apply equaliser
+        if not decimate and self.use_eq:
+            self.equaliser.set_stride(1)  # output all samples from equaliser
+        rx_eq_out = self.equaliser.forward_batched(rx_filter_out, batch_size)
+
+        # Power normalize and rescale to constellation
+        rx_eq_out = rx_eq_out / torch.sqrt(torch.mean(torch.square(rx_eq_out))) * self.constellation_scale
+
+        return rx_eq_out
+
+class PulseShapingAWGNwithBWLandWDM(BasicAWGNwithBWLandWDM):
+    """
+        PulseShaper in bandwidth limited AWGN channel with WDM.
+    """
+    def __init__(self, sps, esn0_db, baud_rate, constellation, batch_size, learning_rate,
+                 tx_filter_length, rx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
+                 wdm_channel_spacing_hz, wdm_channel_selection_rel_cutoff,
+                 filter_init_type='dirac', print_interval=int(5e4), rrc_rolloff=0.5,
+                 use_brickwall=False, use_1clr=False) -> None:
+        super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
+                         adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
+                         learning_rate=learning_rate,
+                         batch_size=batch_size,
+                         constellation=constellation,
+                         learn_tx=True, learn_rx=False,
+                         tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length,
+                         tx_filter_init_type=filter_init_type,
+                         rx_filter_init_type='rrc',
+                         wdm_channel_spacing_hz=wdm_channel_spacing_hz,
+                         wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
+                         print_interval=print_interval,
+                         rrc_rolloff=rrc_rolloff,
+                         use_brickwall=use_brickwall,
+                         use_1clr=use_1clr)
+
+
+class RxFilteringAWGNwithBWLandWDM(BasicAWGNwithBWLandWDM):
+    """
+       Bandwidth limited AWGN channel with learnable Rx filter and WDM.
+    """
+    def __init__(self, sps, esn0_db, baud_rate, constellation, batch_size, learning_rate,
+                 rx_filter_length, tx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
+                 wdm_channel_spacing_hz, wdm_channel_selection_rel_cutoff,
+                 filter_init_type='dirac', print_interval=int(5e4), rrc_rolloff=0.5,
+                 use_brickwall=False, use_1clr=False) -> None:
+        super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
+                         adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
+                         learning_rate=learning_rate,
+                         batch_size=batch_size,
+                         constellation=constellation,
+                         learn_tx=False, learn_rx=True,
+                         rx_filter_length=rx_filter_length,
+                         tx_filter_length=tx_filter_length,
+                         rx_filter_init_type=filter_init_type,
+                         tx_filter_init_type='rrc',
+                         wdm_channel_spacing_hz=wdm_channel_spacing_hz,
+                         wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
+                         print_interval=print_interval,
+                         rrc_rolloff=rrc_rolloff,
+                         use_brickwall=use_brickwall,
+                         use_1clr=use_1clr)
+
+
+class JointTxRxAWGNwithBWLandWDM(BasicAWGNwithBWLandWDM):
+    """
+       Bandwidth limited AWGN channel (WDM) with learnable Tx and Rx filter.
+    """
+    def __init__(self, sps, esn0_db, baud_rate, constellation, batch_size, learning_rate,
+                 rx_filter_length, tx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
+                 wdm_channel_spacing_hz, wdm_channel_selection_rel_cutoff,
+                 rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 print_interval=int(5e4), rrc_rolloff=0.5,
+                 use_brickwall=False, use_1clr=False) -> None:
+        super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
+                         adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
+                         learning_rate=learning_rate,
+                         batch_size=batch_size,
+                         constellation=constellation,
+                         learn_tx=True, learn_rx=True,
+                         tx_filter_length=tx_filter_length,
+                         tx_filter_init_type=tx_filter_init_type,
+                         rx_filter_length=rx_filter_length,
+                         rx_filter_init_type=rx_filter_init_type,
+                         wdm_channel_spacing_hz=wdm_channel_spacing_hz,
+                         wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
+                         print_interval=print_interval,
+                         rrc_rolloff=rrc_rolloff,
+                         use_brickwall=use_brickwall,
+                         use_1clr=use_1clr)
+
+
+class LinearFFEAWGNwithBWLandWDM(BasicAWGNwithBWLandWDM):
+    """
+       Bandwidth limited AWGN channel with fixed Tx and Rx filters and WDM.
+       Adaptive FFE equaliser to combat ISI.
+    """
+    def __init__(self, sps, esn0_db, baud_rate, constellation, batch_size, learning_rate,
+                 rx_filter_length, tx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
+                 wdm_channel_spacing_hz, wdm_channel_selection_rel_cutoff,
+                 ffe_n_taps, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 print_interval=int(5e4), rrc_rolloff=0.5,
+                 use_brickwall=False, use_1clr=False) -> None:
+        super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
+                         adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
+                         learning_rate=learning_rate,
+                         batch_size=batch_size,
+                         constellation=constellation,
+                         equaliser_config={'n_taps': ffe_n_taps},
+                         learn_tx=False, learn_rx=False,
+                         tx_filter_length=tx_filter_length,
+                         tx_filter_init_type=tx_filter_init_type,
+                         rx_filter_length=rx_filter_length,
+                         rx_filter_init_type=rx_filter_init_type,
+                         wdm_channel_spacing_hz=wdm_channel_spacing_hz,
+                         wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
+                         print_interval=print_interval,
+                         rrc_rolloff=rrc_rolloff,
+                         use_brickwall=use_brickwall,
+                         use_1clr=use_1clr)
+
+    def get_equaliser_filter(self):
+        return self.equaliser.filter.get_filter()
+
 
 class NonLinearISIChannel(LearnableTransmissionSystem):
     """
@@ -1434,7 +1668,7 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
         “Geometric Shaping for Distortion-Limited Intensity Modulation/Direct Detection Data Center Links,”
         IEEE Photonics Journal, vol. 15, no. 6, pp. 1–17, 2023, doi: 10.1109/JPHOT.2023.3335398.
 
-        with wavelength division multiplexing (WDM). 
+        with wavelength division multiplexing (WDM).
 
         The system implements an electro absorption modulator (EAM), based on
         absorption curves derived from the above reference.
@@ -1455,7 +1689,7 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
                  learn_rx, learn_tx, rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
                  dac_voltage_pp, dac_voltage_bias, wdm_channel_spacing_hz,
-                 dac_minmax_norm=False,
+                 wdm_channel_selection_rel_cutoff, dac_minmax_norm=False,
                  modulator_type='eam', equaliser_config: dict | None = None,
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
@@ -1476,7 +1710,13 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
         self.wdm_n_channels = 3  # always three channels during training
         self.wdm_channel_spacing_hz = wdm_channel_spacing_hz
         self.torch_seed = torch_seed  # used for generating interferer channels
-        
+
+        # Create Gauss filter object for channel selection on Rx side
+        self.channel_selection_filter = GaussianFqFilter(filter_cutoff_hz=(0.5 * self.baud_rate) * wdm_channel_selection_rel_cutoff,
+                                                         order=5,
+                                                         Fs=1/self.Ts)
+
+
     def forward(self, symbols_up: torch.TensorType):
         rng_gen = torch.random.manual_seed(self.torch_seed)
         symbols_up_chan = torch.zeros((symbols_up.shape[0], self.wdm_n_channels), dtype=symbols_up.dtype)
@@ -1484,11 +1724,11 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
         channels_to_fill = [i for i in range(self.wdm_n_channels) if i != self.wdm_n_channels // 2]  # all except middle
         for cf in channels_to_fill:
             symbols_up_chan[0::self.sps, cf] = symbols_up[::self.sps][torch.randperm(symbols_up.shape[0] // self.sps, generator=rng_gen)]
-        
+
         # Prepare WDM channel
         tx_wdm = torch.zeros((symbols_up_chan.shape[0], ), dtype=torch.complex128)
         channel_fq_grid = torch.arange(-np.floor(self.wdm_n_channels / 2), np.floor(self.wdm_n_channels / 2) + 1, 1) * self.wdm_channel_spacing_hz
-        
+
         for c in range(self.wdm_n_channels):
             x = self.pulse_shaper.forward(symbols_up_chan[:, c])
 
@@ -1499,16 +1739,16 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
             x_eam = self.modulator.forward(v)
 
             tx_wdm += x_eam * torch.exp(1j * 2 * torch.pi * (channel_fq_grid[c] * self.Ts) * torch.arange(0, x.shape[0], dtype=torch.float64))
-        
+
         # Apply SMF
         x_smf = self.channel.forward(tx_wdm)
 
-        # Brick-wall filter (selecting middle channel)
-        x_chan = self.eval_channel_selection(x_smf, self.wdm_channel_spacing_hz)  # FIXME: Should this be slightly larger than bandwidth
+        # Low-pass filter to select middle channel
+        x_chan = self.channel_selection_filter.forward(x_smf)
 
         # Photodiode
         y = self.photodiode.forward(x_chan)
-        
+
         # Apply bandwidth limitation in the ADC
         y_lp = self.adc.forward(y)
 
@@ -1524,7 +1764,7 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
         # Power normalize and rescale to constellation
         rx_eq_out = rx_eq_out / torch.sqrt(torch.mean(torch.square(rx_eq_out))) * self.constellation_scale
 
-        return rx_eq_out        
+        return rx_eq_out
 
     def eval_tx(self, symbols_up: torch.TensorType, n_channels: int, channel_spacing_hz: float,
                 batch_size: int, dac_bitres: int | None = None, torch_seed: int = 0):
@@ -1536,17 +1776,17 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
         channels_to_fill = [i for i in range(n_channels) if i != n_channels // 2]  # all except middle
         for cf in channels_to_fill:
             symbols_up_chan[0::self.sps, cf] = symbols_up[::self.sps][torch.randperm(symbols_up.shape[0] // self.sps, generator=rng_gen)]
-        
+
         # Prepare WDM channel
         tx_wdm = torch.zeros((symbols_up_chan.shape[0], ), dtype=torch.complex128)
         channel_fq_grid = torch.arange(-np.floor(n_channels / 2), np.floor(n_channels / 2) + 1, 1) * channel_spacing_hz
 
         # Set DAC bit resolution
         self.dac.set_bitres(dac_bitres)
-        
+
         print(f"Channel spacing: {channel_spacing_hz / 1e9} GHz")
         print(f"Channel grid: {channel_fq_grid / 1e9} GHz")
-        
+
         for c in range(n_channels):
             x = self.pulse_shaper.forward_numpy(symbols_up_chan[:, c])
 
@@ -1558,7 +1798,7 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
             print(f"EAM (channel {c}): Power at output {10.0 * np.log10(np.average(np.square(np.absolute(x_eam.detach().numpy()))) / 1e-3)} [dBm]")
 
             tx_wdm += x_eam * torch.exp(1j * 2 * torch.pi * (channel_fq_grid[c] * self.Ts) * torch.arange(0, x.shape[0], dtype=torch.float64))
-        
+
         return tx_wdm
 
     def eval_rx(self, x_chan: torch.TensorType, decimate: bool, batch_size: int, adc_bitres: int | None):
@@ -1588,15 +1828,6 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
         rx_eq_out = rx_eq_out / torch.sqrt(torch.mean(torch.square(rx_eq_out))) * self.constellation_scale
 
         return rx_eq_out
-    
-    def eval_channel_selection(self, x_smf, channel_spacing_hz):
-        N_fft = len(x_smf)
-        H = fft(x_smf) * self.Ts
-        fqs = fftfreq(N_fft, self.Ts)
-        fqs_zero = torch.abs(fqs) > (channel_spacing_hz / 2)  # frequencies to zero
-        H[fqs_zero] = 0.0
-        x_chan = ifft(H) * 1 / self.Ts
-        return x_chan
 
     # FIXME: Replace this with the acutal evaluate call.
     def _eval(self, symbols_up: torch.TensorType, batch_size: int, **eval_config):
@@ -1616,8 +1847,8 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
 
         # Channel selection - filter out everything except the "middle" channel
         print(f"Power before channel selection: {10.0 * torch.log10(torch.mean(torch.square(torch.abs(x_smf))) / 1e-3)} [dBm]")
-        x_chan = self.eval_channel_selection(x_smf, channel_spacing_hz)
-        
+        x_chan = self.channel_selection_filter.forward_numpy(x_smf)
+
         # Apply Rx
         rx = self.eval_rx(x_chan, decimate, batch_size, adc_bitres=eval_config.get('adc_bitres', None))
 
@@ -1635,6 +1866,7 @@ class PulseShapingIMwithWDM(IntensityModulationChannelwithWDM):
                  rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
                  dac_voltage_pp, dac_voltage_bias, wdm_channel_spacing_hz,
+                 wdm_channel_selection_rel_cutoff,
                  modulator_type=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000),
@@ -1645,6 +1877,7 @@ class PulseShapingIMwithWDM(IntensityModulationChannelwithWDM):
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                          dac_voltage_pp=dac_voltage_pp, dac_voltage_bias=dac_voltage_bias,
                          wdm_channel_spacing_hz=wdm_channel_spacing_hz,
+                         wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                          modulator_type=modulator_type, equaliser_config=None,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
@@ -1663,6 +1896,7 @@ class RxFilteringIMwithWDM(IntensityModulationChannelwithWDM):
                  rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
                  dac_voltage_pp, dac_voltage_bias, wdm_channel_spacing_hz,
+                 wdm_channel_selection_rel_cutoff,
                  modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000),
@@ -1673,6 +1907,7 @@ class RxFilteringIMwithWDM(IntensityModulationChannelwithWDM):
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                          dac_voltage_pp=dac_voltage_pp, dac_voltage_bias=dac_voltage_bias,
                          wdm_channel_spacing_hz=wdm_channel_spacing_hz,
+                         wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                          modulator_type=modulator_type, equaliser_config=None,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
@@ -1691,6 +1926,7 @@ class JointTxRxIMwithWDM(IntensityModulationChannelwithWDM):
                  rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
                  dac_voltage_pp, dac_voltage_bias, wdm_channel_spacing_hz,
+                 wdm_channel_selection_rel_cutoff,
                  modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000),
@@ -1701,6 +1937,7 @@ class JointTxRxIMwithWDM(IntensityModulationChannelwithWDM):
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                          dac_voltage_pp=dac_voltage_pp, dac_voltage_bias=dac_voltage_bias,
                          wdm_channel_spacing_hz=wdm_channel_spacing_hz,
+                         wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                          modulator_type=modulator_type, equaliser_config=None,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
@@ -1719,6 +1956,7 @@ class LinearFFEIMwithWDM(IntensityModulationChannelwithWDM):
                  rx_filter_length, tx_filter_length, ffe_n_taps: int,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
                  dac_voltage_pp, dac_voltage_bias, wdm_channel_spacing_hz,
+                 wdm_channel_selection_rel_cutoff,
                  modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000),
@@ -1729,6 +1967,7 @@ class LinearFFEIMwithWDM(IntensityModulationChannelwithWDM):
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                          dac_voltage_pp=dac_voltage_pp, dac_voltage_bias=dac_voltage_bias,
                          wdm_channel_spacing_hz=wdm_channel_spacing_hz,
+                         wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                          modulator_type=modulator_type, equaliser_config={'n_taps': ffe_n_taps},
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,

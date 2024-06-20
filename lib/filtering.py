@@ -1,6 +1,7 @@
 import torch
 from torch.nn import functional as torchF
 from torchaudio.functional import convolve, lfilter
+from torch.fft import fft, ifft, fftshift, ifftshift, fftfreq
 import numpy.typing as npt
 import numpy as np
 from scipy.signal import bessel, group_delay
@@ -213,3 +214,32 @@ class BrickWallFilter(torch.nn.Module):
 
     def get_filters(self):
         return self.filter.detach().cpu().numpy(), 1
+
+
+class GaussianFqFilter(torch.nn.Module):
+    def __init__(self, filter_cutoff_hz, order, Fs, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.Fs = Fs
+        self.order = order
+        self.filter_cutoff_hz = filter_cutoff_hz
+        self.logsqrt2 = np.log(np.sqrt(2))
+
+    def _calculate_filter(self, f):
+        return torch.exp(-self.logsqrt2*(2*f/(2*self.filter_cutoff_hz))**(2 * self.order))
+
+    def forward(self, x):  
+        fqs = fftshift(fftfreq(len(x), 1/self.Fs))
+        filter = self._calculate_filter(fqs)
+        X = fftshift(fft(x))/len(x)
+        return ifft(ifftshift(X * filter))*len(X)
+    
+    def forward_batched(self, x, batch_size=None):
+        return self.forward_numpy(x)
+
+    def forward_numpy(self, x):
+        # Only use for evaluation. Will not track gradients
+        xnp = x.numpy()
+        fqs = np.linspace(-0.5, 0.5, num=len(xnp)) * self.Fs
+        filter = self._calculate_filter(torch.from_numpy(fqs)).numpy()
+        X = np.fft.fftshift(np.fft.fft(xnp))/len(xnp)
+        return torch.from_numpy(np.fft.ifft(np.fft.ifftshift(X * filter))*len(X))

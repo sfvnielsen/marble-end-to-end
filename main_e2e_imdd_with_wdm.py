@@ -48,6 +48,7 @@ if __name__ == "__main__":
     use_1clr = True
     dac_voltage_pp = 2.0
     dac_voltage_bias = -dac_voltage_pp/2
+    wdm_channel_selection_rel_cutoff = 1.1
 
     # Configuration of electro absorption modulator
     modulator_type = 'eam'
@@ -101,6 +102,7 @@ if __name__ == "__main__":
                                      rrc_rolloff=rrc_rolloff,
                                      dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
                                      wdm_channel_spacing_hz=wdm_channel_spacing_training,
+                                     wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                                      tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                      adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                      tx_filter_init_type='rrc', rx_filter_init_type='rrc',
@@ -112,6 +114,7 @@ if __name__ == "__main__":
                                    rrc_rolloff=rrc_rolloff,
                                    dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
                                    wdm_channel_spacing_hz=wdm_channel_spacing_training,
+                                   wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                                    tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                    adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                    tx_filter_init_type='rrc', rx_filter_init_type='rrc',
@@ -123,6 +126,7 @@ if __name__ == "__main__":
                                    rrc_rolloff=rrc_rolloff,
                                    dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
                                    wdm_channel_spacing_hz=wdm_channel_spacing_training,
+                                   wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                                    tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                    adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                    tx_filter_init_type='rrc', rx_filter_init_type='rrc',
@@ -134,6 +138,7 @@ if __name__ == "__main__":
                                  rrc_rolloff=rrc_rolloff, ffe_n_taps=35,
                                  dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
                                  wdm_channel_spacing_hz=wdm_channel_spacing_training,
+                                 wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                                  tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                  adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                  tx_filter_init_type='rrc', rx_filter_init_type='rrc',
@@ -189,7 +194,7 @@ if __name__ == "__main__":
     with torch.no_grad():
         tx_wdm = joint_tx_rx.eval_tx(symbols_up, n_channels=wdm_n_channels, batch_size=int(1e5),
                                      channel_spacing_hz=wdm_channel_spacings[len(wdm_channel_spacings) // 2])
-        tx_chan = joint_tx_rx.eval_channel_selection(tx_wdm, wdm_channel_spacings[len(wdm_channel_spacings) // 2])
+        tx_chan = joint_tx_rx.channel_selection_filter.forward(tx_wdm)
     ax.psd(tx_wdm, Fs=1 / joint_tx_rx.Ts, label='Tx WDM', sides='twosided')
     ax.psd(tx_chan, Fs=1 / joint_tx_rx.Ts, label='Tx Chan select', sides='twosided')
 

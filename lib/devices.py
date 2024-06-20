@@ -229,7 +229,10 @@ class DigitalToAnalogConverter(object):
         self.voltage_norm_funcp = self._vol_norm_const
 
         self.v_bias = 0.0
-        if isinstance(bias_voltage, str) and bias_voltage == "negative_vpp":
+        if isinstance(bias_voltage, str) and bias_voltage == "positive_vpp":
+            # Move the voltages to positive domain with max value Vpp (min = 0)
+            self.v_bias = self.v_pp/2
+        elif isinstance(bias_voltage, str) and bias_voltage == "negative_vpp":
             # Move the voltages to negative domain with max value 0 (based on the Vpp)
             self.v_bias = -self.v_pp/2
         elif isinstance(bias_voltage, float):

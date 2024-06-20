@@ -234,6 +234,8 @@ if __name__ == "__main__":
         ax[0].plot(v, 0.5 / imdd_system.modulator.vpi * (v + imdd_system.modulator.vb) * torch.pi)
         ax[1].plot(v, imdd_system.modulator.forward(v))
         fig.suptitle('Mach Zehnder')
+    elif modulator_type == 'ideal':
+        ax[0].plot(v, imdd_system.modulator.forward(v))
     elif 'eam' in modulator_type:
         alpha_db = imdd_system.modulator.spline_object.evaluate(v)
         ax[0].plot(v, alpha_db)
