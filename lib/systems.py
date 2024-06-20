@@ -837,7 +837,7 @@ class BasicAWGNwithBWLandWDM(BasicAWGNwithBWL):
         y = tx_wdm + noise_std * torch.randn(x_lp.shape)
 
         # Low-pass filter to select middle channel
-        y_chan = self.channel_selection_filter.forward(y)
+        y_chan = torch.real(self.channel_selection_filter.forward(y))
 
         # Apply bandwidth limitation in the ADC
         y_lp = self.adc.forward(y_chan)
@@ -880,7 +880,7 @@ class BasicAWGNwithBWLandWDM(BasicAWGNwithBWL):
         y = tx_wdm + noise_std * torch.randn(x_lp.shape)
 
         # Low-pass filter to select middle channel
-        y_chan = self.channel_selection_filter.forward_numpy(y)
+        y_chan = torch.real(self.channel_selection_filter.forward_numpy(y))
 
         # Apply bandwidth limitation in the ADC
         y_lp = self.adc.forward_batched(y_chan, batch_size=batch_size)
