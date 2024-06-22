@@ -227,6 +227,7 @@ class DigitalToAnalogConverter(object):
         self.v_pp = peak_to_peak_voltage
         self.pp_const = peak_to_peak_constellation  # distance between largest and smallest constellation point
         self.voltage_norm_funcp = self._vol_norm_const
+        self.clamp_min, self.clamp_max = -0.5, 0.5
 
         self.v_bias = 0.0
         if isinstance(bias_voltage, str) and bias_voltage == "positive_vpp":
@@ -257,8 +258,8 @@ class DigitalToAnalogConverter(object):
         if bwl_cutoff is not None:
             self.lpf = BesselFilter(bessel_order=bessel_order, cutoff_hz=bwl_cutoff, fs=fs, dtype=dtype)
 
-    def _clamp_voltage(self, x, clamping_value=0.5):
-        return torch.clamp(x, -clamping_value, clamping_value)
+    def _clamp_voltage(self, x):
+        return torch.clamp(x, self.clamp_min, self.clamp_max)
 
     def set_bitres(self, new_bitres):
         assert isinstance(new_bitres, int) or new_bitres is None
@@ -274,7 +275,7 @@ class DigitalToAnalogConverter(object):
         return self._clamp_voltage(self.voltage_norm_funcp(x))
 
     def _vol_norm_minmax(self, x: torch.TensorType):
-        return (x - x.min()) / (x.max() - x.min())
+        return (x - x.min()) / (x.max() - x.min()) - 0.5
 
     def _vol_norm_const(self, x: torch.TensorType):
         # x is assumed to have self.pp_const between largest and smallest constellation point
