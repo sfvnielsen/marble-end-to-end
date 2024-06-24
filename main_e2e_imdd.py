@@ -103,7 +103,7 @@ if __name__ == "__main__":
                                              dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
                                              tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                              adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
-                                             dac_bitres=None, adc_bitres=None,
+                                             dac_bitres=None, adc_bitres=None, dac_minmax_norm=6.0,
                                              tx_filter_init_type='rrc', rx_filter_init_type='rrc',
                                              smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                                              modulator_type=modulator_type)

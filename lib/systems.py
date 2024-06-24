@@ -1323,7 +1323,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
                  modulator_type='eam', equaliser_config: dict | None = None,
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
-                 dac_bitres=None, adc_bitres=None, dac_minmax_norm=False,
+                 dac_bitres=None, adc_bitres=None, dac_minmax_norm: float | str = 'auto',
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
         super().__init__(sps=sps, esn0_db=np.nan, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
@@ -1369,19 +1369,27 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         info_bw = 0.5 * baud_rate
 
         # Estimate the min-max value of an RRC filter empirically and apply that as normalization in the DAC
-        __, g = rrcosfilter(tx_filter_length + 1, rrc_rolloff, self.sym_length, 1 / self.Ts)
-        g = g[1::]  # delete first element to make filter odd length
-        g = g / np.linalg.norm(g)
-        randomgen = np.random.default_rng(0)
-        a = randomgen.choice(constellation, size=(int(1e5),), replace=True)
-        aup = np.zeros((len(a) * self.sps, ))
-        aup[::self.sps] = a
-        x = np.convolve(aup, g)
-        absmax = np.abs(np.max(x))
+        dac_normalizer = dac_minmax_norm
+        if isinstance(dac_minmax_norm, float) or isinstance(dac_minmax_norm, int):
+            pass
+        elif isinstance(dac_minmax_norm, str) and dac_minmax_norm == 'auto':
+            __, g = rrcosfilter(tx_filter_length + 1, rrc_rolloff, self.sym_length, 1 / self.Ts)
+            g = g[1::]  # delete first element to make filter odd length
+            g = g / np.linalg.norm(g)
+            randomgen = np.random.default_rng(0)
+            a = randomgen.choice(constellation, size=(int(1e5),), replace=True)
+            aup = np.zeros((len(a) * self.sps, ))
+            aup[::self.sps] = a
+            x = np.convolve(aup, g)
+            dac_normalizer = 2 * np.abs(np.max(x))
+        elif isinstance(dac_minmax_norm, str) and dac_minmax_norm == 'minmax':
+            dac_normalizer = dac_minmax_norm
+        else:
+            raise Exception(f"Unknown DAC normalization scheme: '{dac_minmax_norm}'")
 
         # Digital-to-analog (DAC) converter
         self.dac = DigitalToAnalogConverter(bias_voltage=dac_voltage_bias, peak_to_peak_voltage=dac_voltage_pp,
-                                            peak_to_peak_constellation=2*absmax if not dac_minmax_norm else 'minmax',
+                                            peak_to_peak_constellation=dac_normalizer,
                                             bwl_cutoff=None if dac_bwl_relative_cutoff is None else info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts,
                                             bessel_order=5, bit_resolution=dac_bitres)
 
@@ -1452,6 +1460,8 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
     def zero_gradients(self):
         self.pulse_shaper.zero_grad()
         self.rx_filter.zero_grad()
+        if self.use_eq:
+            self.equaliser.zero_grad()
 
     def forward(self, symbols_up: torch.TensorType):
         # Input is assumed to be upsampled sybmols
@@ -1561,7 +1571,7 @@ class PulseShapingIM(IntensityModulationChannel):
                  dac_voltage_pp, dac_voltage_bias,
                  modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
-                 dac_bitres=None, dac_minmax_norm=False, adc_bitres=None,
+                 dac_bitres=None, dac_minmax_norm: float | str = 'auto', adc_bitres=None,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
@@ -1585,7 +1595,7 @@ class RxFilteringIM(IntensityModulationChannel):
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_voltage_pp, dac_voltage_bias, dac_minmax_norm=False,
+                 dac_voltage_pp, dac_voltage_bias, dac_minmax_norm: float | str = 'auto',
                  modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
                  dac_bitres=None, adc_bitres=None,
@@ -1610,7 +1620,7 @@ class JointTxRxIM(IntensityModulationChannel):
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_voltage_pp, dac_voltage_bias, dac_minmax_norm=False,
+                 dac_voltage_pp, dac_voltage_bias, dac_minmax_norm: float | str = 'auto',
                  modulator_type=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
                  dac_bitres=None, adc_bitres=None,
@@ -1637,7 +1647,7 @@ class LinearFFEIM(IntensityModulationChannel):
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length, ffe_n_taps,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_voltage_pp, dac_voltage_bias, dac_minmax_norm=False,
+                 dac_voltage_pp, dac_voltage_bias, dac_minmax_norm: float | str = 'auto',
                  modulator_type=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
                  dac_bitres=None, adc_bitres=None,
@@ -1689,7 +1699,7 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
                  learn_rx, learn_tx, rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
                  dac_voltage_pp, dac_voltage_bias, wdm_channel_spacing_hz,
-                 wdm_channel_selection_rel_cutoff, dac_minmax_norm=False,
+                 wdm_channel_selection_rel_cutoff, dac_minmax_norm: float | str = 'auto',
                  modulator_type='eam', equaliser_config: dict | None = None,
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
@@ -1868,7 +1878,8 @@ class PulseShapingIMwithWDM(IntensityModulationChannelwithWDM):
                  dac_voltage_pp, dac_voltage_bias, wdm_channel_spacing_hz,
                  wdm_channel_selection_rel_cutoff,
                  modulator_type=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
+                 dac_bwl_relative_cutoff=0.75, dac_minmax_norm: float | str = 'auto',
+                 adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000),
                  torch_seed=0) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
@@ -1880,6 +1891,7 @@ class PulseShapingIMwithWDM(IntensityModulationChannelwithWDM):
                          wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                          modulator_type=modulator_type, equaliser_config=None,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
+                         dac_minmax_norm=dac_minmax_norm,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
                          torch_seed=torch_seed)
@@ -1898,7 +1910,8 @@ class RxFilteringIMwithWDM(IntensityModulationChannelwithWDM):
                  dac_voltage_pp, dac_voltage_bias, wdm_channel_spacing_hz,
                  wdm_channel_selection_rel_cutoff,
                  modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
+                 dac_bwl_relative_cutoff=0.75, dac_minmax_norm: float | str = 'auto',
+                 adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000),
                  torch_seed=0) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
@@ -1910,7 +1923,8 @@ class RxFilteringIMwithWDM(IntensityModulationChannelwithWDM):
                          wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                          modulator_type=modulator_type, equaliser_config=None,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
-                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, dac_minmax_norm=dac_minmax_norm,
+                         adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
                          torch_seed=torch_seed)
 
@@ -1928,7 +1942,8 @@ class JointTxRxIMwithWDM(IntensityModulationChannelwithWDM):
                  dac_voltage_pp, dac_voltage_bias, wdm_channel_spacing_hz,
                  wdm_channel_selection_rel_cutoff,
                  modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
+                 dac_bwl_relative_cutoff=0.75, dac_minmax_norm: float | str = 'auto',
+                 adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000),
                  torch_seed=0) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
@@ -1940,7 +1955,8 @@ class JointTxRxIMwithWDM(IntensityModulationChannelwithWDM):
                          wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                          modulator_type=modulator_type, equaliser_config=None,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
-                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, dac_minmax_norm=dac_minmax_norm,
+                         adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
                          torch_seed=torch_seed)
 
@@ -1958,7 +1974,8 @@ class LinearFFEIMwithWDM(IntensityModulationChannelwithWDM):
                  dac_voltage_pp, dac_voltage_bias, wdm_channel_spacing_hz,
                  wdm_channel_selection_rel_cutoff,
                  modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
+                 dac_bwl_relative_cutoff=0.75, dac_minmax_norm: float | str = 'auto',
+                 adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000),
                  torch_seed=0) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
@@ -1970,6 +1987,7 @@ class LinearFFEIMwithWDM(IntensityModulationChannelwithWDM):
                          wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                          modulator_type=modulator_type, equaliser_config={'n_taps': ffe_n_taps},
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
-                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, dac_minmax_norm=dac_minmax_norm,
+                         adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
                          torch_seed=torch_seed)
