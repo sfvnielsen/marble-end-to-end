@@ -233,11 +233,14 @@ class DigitalToAnalogConverter(object):
         if isinstance(bias_voltage, str) and bias_voltage == "positive_vpp":
             # Move the voltages to positive domain with max value Vpp (min = 0)
             self.v_bias = self.v_pp/2
+            self.clamp_min, self.clamp_max = 0.0, self.v_pp
         elif isinstance(bias_voltage, str) and bias_voltage == "negative_vpp":
             # Move the voltages to negative domain with max value 0 (based on the Vpp)
             self.v_bias = -self.v_pp/2
+            self.clamp_min, self.clamp_max = -self.v_pp, 0.0
         elif isinstance(bias_voltage, float):
-            self.v_bias = bias_voltage 
+            self.v_bias = bias_voltage
+            self.clamp_min, self.clamp_max = -self.v_pp/2 + self.v_bias, self.v_pp/2 + self.v_bias
         else:
             print(f"Unknown voltage bias type {bias_voltage}. Using a bias of 0.0")
 
@@ -272,7 +275,7 @@ class DigitalToAnalogConverter(object):
         return self.lpf.get_filters()
 
     def voltage_normalization(self, x: torch.TensorType) -> torch.TensorType:
-        return self._clamp_voltage(self.voltage_norm_funcp(x))
+        return self.voltage_norm_funcp(x)
 
     def _vol_norm_minmax(self, x: torch.TensorType):
         return (x - x.min()) / (x.max() - x.min()) - 0.5
@@ -288,7 +291,7 @@ class DigitalToAnalogConverter(object):
         # Run lpf
         v_lp = self.lpf.forward(v)
 
-        return v_lp + self.v_bias
+        return self._clamp_voltage(v_lp + self.v_bias)
 
     def eval(self, x):
         # Map digital signal to a voltage
@@ -297,12 +300,15 @@ class DigitalToAnalogConverter(object):
         if self.bit_resolution:
             v = quantize(v, self.bit_resolution)
 
-        print(f"DAC: Power in voltage domain: {10.0 * torch.log10(torch.mean(torch.square(v)) / 1e-3)} [dBm]")
-
         # Run lpf
         v_lp = self.lpf.forward_numpy(v)
 
-        return v_lp + self.v_bias
+        v_out = v_lp + self.v_bias
+
+        if torch.min(v_out) < self.clamp_min or torch.max(v_out) > self.clamp_max:
+            print(f"DAC: Warning!! Clipping in DAC.")
+
+        return self._clamp_voltage(v_out)
 
 
 class AnalogToDigitalConverter(object):
