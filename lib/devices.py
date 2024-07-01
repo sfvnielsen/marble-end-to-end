@@ -86,6 +86,8 @@ class ElectroAbsorptionModulator(object):
         self.laser_power = 10 ** (laser_power_dbm / 10) * 1e-3  # [Watt]
         self.linewidth_enhancement = linewidth_enhancement  # chirp model (reasonable values in the interval [0,3])
 
+        self.voltage_range = (-4.0, 0.0)
+
         self.x_knee_points = self.ABSORPTION_KNEE_POINTS_X if not linear_absorption else self.LINEAR_ABSORPTION_KNEE_POINTS_X
         self.y_knee_points = self.ABSORPTION_KNEE_POINTS_Y if not linear_absorption else self.LINEAR_ABSORPTION_KNEE_POINTS_Y
 
@@ -103,6 +105,9 @@ class ElectroAbsorptionModulator(object):
         return self.Plaunch_dbm
 
     def forward(self, v):
+        # Clamp input range
+        v = torch.clamp(v, *self.voltage_range)
+
         # Calculate absorption from voltage
         alpha_db = self.spline_object.evaluate(v).squeeze()
 
@@ -216,44 +221,51 @@ def quantize(signal, bits):
     return dequantized
 
 
-class DigitalToAnalogConverter(object):
+class DigitalToAnalogConverter(torch.nn.Module):
     """
         DAC with bandwidth limitation modeled by a Bessel filter
     """
     def __init__(self, bwl_cutoff, peak_to_peak_voltage, peak_to_peak_constellation: float | str,
                  fs, bias_voltage: float | str ='negative_vpp', bit_resolution=None, bessel_order=5,
-                 dtype=torch.float64) -> None:
+                 learnable_gain_and_bias=False,
+                 dtype=torch.float64, **kwargs) -> None:
+        super().__init__(**kwargs)
+
         # Set attributes of DAC
+        self.learnable_gain_and_bias = learnable_gain_and_bias
         self.v_pp = peak_to_peak_voltage
         self.pp_const = peak_to_peak_constellation  # distance between largest and smallest constellation point
         self.voltage_norm_funcp = self._vol_norm_const
         self.clamp_min, self.clamp_max = -0.5, 0.5
+        gain_init = 1.0
+        bias_init = 0.0
 
-        self.v_bias = 0.0
         if isinstance(bias_voltage, str) and bias_voltage == "positive_vpp":
             # Move the voltages to positive domain with max value Vpp (min = 0)
-            self.v_bias = self.v_pp/2
+            bias_init = self.v_pp/2
             self.clamp_min, self.clamp_max = 0.0, self.v_pp
         elif isinstance(bias_voltage, str) and bias_voltage == "negative_vpp":
             # Move the voltages to negative domain with max value 0 (based on the Vpp)
-            self.v_bias = -self.v_pp/2
+            bias_init = -self.v_pp/2
             self.clamp_min, self.clamp_max = -self.v_pp, 0.0
         elif isinstance(bias_voltage, float):
-            self.v_bias = bias_voltage
-            self.clamp_min, self.clamp_max = -self.v_pp/2 + self.v_bias, self.v_pp/2 + self.v_bias
+            bias_init = bias_voltage
+            self.clamp_min, self.clamp_max = -self.v_pp/2 + self.v_bias, self.v_pp/2 + self.v_bias  # FIXME: What to do with learnable bias?
         else:
             print(f"Unknown voltage bias type {bias_voltage}. Using a bias of 0.0")
+        
+        self.v_bias = torch.nn.Parameter(torch.scalar_tensor(bias_init, dtype=dtype), requires_grad=learnable_gain_and_bias)
 
         if isinstance(self.pp_const, str) and self.pp_const == "minmax":
             self.voltage_norm_funcp = self._vol_norm_minmax
-            self.pp_norm = None
             print(f"DAC: minmax mode. WARNING! This is not nicely differentiable.")
         elif isinstance(self.pp_const, float):
-            self.pp_norm = self.pp_const
             self.voltage_norm_funcp = self._vol_norm_const
+            gain_init = 1 / self.pp_const
         else:
             raise Exception(f"Failed parsing 'peak_to_peak_constellation' argument ({peak_to_peak_constellation})")
 
+        self.gain = torch.nn.Parameter(torch.scalar_tensor(gain_init, dtype=dtype), requires_grad=learnable_gain_and_bias)
         self.bit_resolution = bit_resolution
 
         # Initialize bessel filter
@@ -282,7 +294,7 @@ class DigitalToAnalogConverter(object):
 
     def _vol_norm_const(self, x: torch.TensorType):
         # x is assumed to have self.pp_const between largest and smallest constellation point
-        return x / self.pp_norm
+        return x * self.gain
 
     def forward(self, x):
         # Map digital signal to a voltage

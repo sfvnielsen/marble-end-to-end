@@ -46,7 +46,7 @@ if __name__ == "__main__":
     eval_dac_bitres = 5
     use_1clr = True
 
-    dac_voltage_pp = 4.0
+    dac_voltage_pp = 2.0
     dac_voltage_bias = 'negative_vpp'
 
     # Configuration of electro absorption modulator
@@ -93,7 +93,7 @@ if __name__ == "__main__":
     random_obj = np.random.default_rng(seed=seed)
 
     # Optimization parameters
-    learning_rate = 1e-3
+    learning_rate = 5e-3
     batch_size = 1000
 
     # Initialize learnable transmission system
@@ -101,9 +101,10 @@ if __name__ == "__main__":
                                              learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                              learn_tx=learn_tx, learn_rx=learn_rx, rrc_rolloff=rrc_rolloff,
                                              dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
+                                             dac_learnable_bias_and_gain=True,
                                              tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                              adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
-                                             dac_bitres=None, adc_bitres=None, dac_minmax_norm=6.0,
+                                             dac_bitres=None, adc_bitres=None, dac_minmax_norm=4.5,
                                              tx_filter_init_type='rrc', rx_filter_init_type='rrc',
                                              smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                                              modulator_type=modulator_type)
@@ -141,9 +142,10 @@ if __name__ == "__main__":
                                   learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                   rrc_rolloff=rrc_rolloff, ffe_n_taps=25,
                                   dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
+                                  dac_learnable_bias_and_gain=True,
                                   tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                   adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
-                                  dac_bitres=None, adc_bitres=None,
+                                  dac_bitres=None, adc_bitres=None, dac_minmax_norm=4.5,
                                   tx_filter_init_type='rrc', rx_filter_init_type='rrc',
                                   smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                                   modulator_type=modulator_type)
@@ -230,26 +232,27 @@ if __name__ == "__main__":
     v = torch.linspace(-imdd_system.dac.v_pp/2, imdd_system.dac.v_pp/2, 1000) + imdd_system.dac.v_bias
 
     fig, ax = plt.subplots(figsize=FIGSIZE, ncols=2)
-    if modulator_type == 'mzm' :
-        ax[0].plot(v, 0.5 / imdd_system.modulator.vpi * (v + imdd_system.modulator.vb) * torch.pi)
-        ax[1].plot(v, imdd_system.modulator.forward(v))
-        fig.suptitle('Mach Zehnder')
-    elif modulator_type == 'ideal':
-        ax[0].plot(v, imdd_system.modulator.forward(v))
-    elif 'eam' in modulator_type:
-        alpha_db = imdd_system.modulator.spline_object.evaluate(v)
-        ax[0].plot(v, alpha_db)
-        ax[0].plot(imdd_system.modulator.x_knee_points, imdd_system.modulator.y_knee_points, 'ro')
-        ax[0].set_xlabel('Voltage')
-        ax[0].set_ylabel('Absorption [dB]')
-        ax[0].invert_xaxis()
-        ax[0].invert_yaxis()
-        ax[0].grid()
+    with torch.no_grad():
+        if modulator_type == 'mzm' :
+            ax[0].plot(v, 0.5 / imdd_system.modulator.vpi * (v + imdd_system.modulator.vb) * torch.pi)
+            ax[1].plot(v, imdd_system.modulator.forward(v))
+            fig.suptitle('Mach Zehnder')
+        elif modulator_type == 'ideal':
+            ax[0].plot(v, imdd_system.modulator.forward(v))
+        elif 'eam' in modulator_type:
+            alpha_db = imdd_system.modulator.spline_object.evaluate(v)
+            ax[0].plot(v, alpha_db)
+            ax[0].plot(imdd_system.modulator.x_knee_points, imdd_system.modulator.y_knee_points, 'ro')
+            ax[0].set_xlabel('Voltage')
+            ax[0].set_ylabel('Absorption [dB]')
+            ax[0].invert_xaxis()
+            ax[0].invert_yaxis()
+            ax[0].grid()
 
-        ax[1].plot(v, torch.absolute(imdd_system.modulator.forward(v)))
-        ax[1].set_xlabel('Voltage')
-        ax[1].set_ylabel('Optical field amplitude')
-        ax[1].grid()
+            ax[1].plot(v, torch.absolute(imdd_system.modulator.forward(v)))
+            ax[1].set_xlabel('Voltage')
+            ax[1].set_ylabel('Optical field amplitude')
+            ax[1].grid()
 
     if save_figures:
         fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_modulator_response.eps"), format='eps')
