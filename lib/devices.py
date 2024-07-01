@@ -86,8 +86,6 @@ class ElectroAbsorptionModulator(object):
         self.laser_power = 10 ** (laser_power_dbm / 10) * 1e-3  # [Watt]
         self.linewidth_enhancement = linewidth_enhancement  # chirp model (reasonable values in the interval [0,3])
 
-        self.voltage_range = (-4.0, 0.0)
-
         self.x_knee_points = self.ABSORPTION_KNEE_POINTS_X if not linear_absorption else self.LINEAR_ABSORPTION_KNEE_POINTS_X
         self.y_knee_points = self.ABSORPTION_KNEE_POINTS_Y if not linear_absorption else self.LINEAR_ABSORPTION_KNEE_POINTS_Y
 
@@ -105,9 +103,6 @@ class ElectroAbsorptionModulator(object):
         return self.Plaunch_dbm
 
     def forward(self, v):
-        # Clamp input range
-        v = torch.clamp(v, *self.voltage_range)
-
         # Calculate absorption from voltage
         alpha_db = self.spline_object.evaluate(v).squeeze()
 

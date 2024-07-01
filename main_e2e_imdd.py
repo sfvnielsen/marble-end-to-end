@@ -46,7 +46,7 @@ if __name__ == "__main__":
     eval_dac_bitres = 5
     use_1clr = True
 
-    dac_voltage_pp = 2.0
+    dac_voltage_pp = 3.5
     dac_voltage_bias = 'negative_vpp'
 
     # Configuration of electro absorption modulator
@@ -229,7 +229,7 @@ if __name__ == "__main__":
              ax)
 
     # Plot voltage-to-absorption function - compare with (Liang and Kahn)
-    v = torch.linspace(-imdd_system.dac.v_pp/2, imdd_system.dac.v_pp/2, 1000) + imdd_system.dac.v_bias
+    v = torch.linspace(imdd_system.dac.clamp_min, imdd_system.dac.clamp_max, 1000)
 
     fig, ax = plt.subplots(figsize=FIGSIZE, ncols=2)
     with torch.no_grad():
@@ -257,6 +257,36 @@ if __name__ == "__main__":
     if save_figures:
         fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_modulator_response.eps"), format='eps')
         fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_modulator_response.png"), dpi=DPI)
+
+    # Plot DAC normalization
+    aup = np.zeros((len(a) * samples_per_symbol,))
+    aup[::samples_per_symbol] = a
+    n_methods = 2
+    nbins = 100
+
+    fig, axs = plt.subplots(nrows=2, ncols=n_methods, sharex='row', figsize=(12, 7))
+    with torch.no_grad():
+        for s, (sys, sys_label) in enumerate(zip((imdd_system, imdd_system_ffe),
+                                                ['E2E', 'RRC+FFE'])):
+            
+            # Apply pulse shaper
+            x = sys.pulse_shaper.forward_numpy(torch.from_numpy(aup))
+
+            # Apply DAC
+            v = sys.dac.eval(x)
+
+            # Plot distributions (before and after DAC)
+            axs[0, s].hist(x.numpy(), bins=nbins)
+            axs[1, s].hist(v.numpy(), bins=nbins)
+
+            axs[0, s].set_title(f"Gain: {sys.dac.gain.data:.3f} \n Bias {sys.dac.v_bias.data:.3f}")
+
+    
+    axs[0, 0].set_ylabel('Digital')
+    axs[1, 0].set_ylabel('Voltage')
+    fig.tight_layout()
+    fig.suptitle('DAC normalization')
+
 
     # Plot channel phase response
     f, channelH = imdd_system.channel.get_fq_filter(len(a) * samples_per_symbol)
