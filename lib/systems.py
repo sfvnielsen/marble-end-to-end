@@ -1319,7 +1319,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  learn_rx, learn_tx, rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_voltage_pp, dac_voltage_bias,
+                 dac_voltage_pp, dac_voltage_bias, dac_learnable_norm: bool, dac_learnable_bias: bool,
                  modulator_type='eam', equaliser_config: dict | None = None,
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
@@ -1388,10 +1388,13 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
             raise Exception(f"Unknown DAC normalization scheme: '{dac_minmax_norm}'")
 
         # Digital-to-analog (DAC) converter
+        self.optimizable_dac = dac_learnable_bias or dac_learnable_norm
         self.dac = DigitalToAnalogConverter(bias_voltage=dac_voltage_bias, peak_to_peak_voltage=dac_voltage_pp,
                                             peak_to_peak_constellation=dac_normalizer,
                                             bwl_cutoff=None if dac_bwl_relative_cutoff is None else info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts,
-                                            bessel_order=5, bit_resolution=dac_bitres)
+                                            bessel_order=5, bit_resolution=dac_bitres,
+                                            learnable_bias=dac_learnable_bias,
+                                            learnable_normalization=dac_learnable_norm)
 
         # Analog-to-digial (ADC) converter
         self.adc = AnalogToDigitalConverter(bwl_cutoff=None if adc_bwl_relative_cutoff is None else info_bw * adc_bwl_relative_cutoff, fs=1/self.Ts,
@@ -1453,13 +1456,18 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         params_to_return = []
         params_to_return.append({"params": self.pulse_shaper.parameters()})
         params_to_return.append({"params": self.rx_filter.parameters()})
+        if self.optimizable_dac:
+            params_to_return.append({"params": self.dac.parameters()})
         if self.use_eq:
             params_to_return += self.equaliser.get_parameters()
+        
         return params_to_return
 
     def zero_gradients(self):
         self.pulse_shaper.zero_grad()
         self.rx_filter.zero_grad()
+        if self.optimizable_dac:
+            self.dac.zero_grad()
         if self.use_eq:
             self.equaliser.zero_grad()
 
@@ -1568,7 +1576,7 @@ class PulseShapingIM(IntensityModulationChannel):
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_voltage_pp, dac_voltage_bias,
+                 dac_voltage_pp, dac_voltage_bias, dac_learnable_norm: bool, dac_learnable_bias: bool,
                  modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
                  dac_bitres=None, dac_minmax_norm: float | str = 'auto', adc_bitres=None,
@@ -1578,7 +1586,7 @@ class PulseShapingIM(IntensityModulationChannel):
                          learn_rx=False, learn_tx=True, rx_filter_length=rx_filter_length,
                          tx_filter_length=tx_filter_length,
                          dac_voltage_pp=dac_voltage_pp, dac_voltage_bias=dac_voltage_bias,
-                         dac_minmax_norm=dac_minmax_norm,
+                         dac_minmax_norm=dac_minmax_norm, dac_learnable_bias=dac_learnable_bias, dac_learnable_norm=dac_learnable_norm,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                          modulator_type=modulator_type,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
@@ -1595,7 +1603,8 @@ class RxFilteringIM(IntensityModulationChannel):
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_voltage_pp, dac_voltage_bias, dac_minmax_norm: float | str = 'auto',
+                 dac_voltage_pp, dac_voltage_bias, dac_learnable_norm: bool, dac_learnable_bias: bool,
+                 dac_minmax_norm: float | str = 'auto',
                  modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
                  dac_bitres=None, adc_bitres=None,
@@ -1604,7 +1613,7 @@ class RxFilteringIM(IntensityModulationChannel):
                          batch_size=batch_size, constellation=constellation,
                          rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
                          dac_voltage_pp=dac_voltage_pp, dac_voltage_bias=dac_voltage_bias,
-                         dac_minmax_norm=dac_minmax_norm,
+                         dac_minmax_norm=dac_minmax_norm, dac_learnable_bias=dac_learnable_bias, dac_learnable_norm=dac_learnable_norm,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                          modulator_type=modulator_type, learn_rx=True, learn_tx=False,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
@@ -1620,7 +1629,8 @@ class JointTxRxIM(IntensityModulationChannel):
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_voltage_pp, dac_voltage_bias, dac_minmax_norm: float | str = 'auto',
+                 dac_voltage_pp, dac_voltage_bias, dac_learnable_norm: bool, dac_learnable_bias: bool,
+                 dac_minmax_norm: float | str = 'auto',
                  modulator_type=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
                  dac_bitres=None, adc_bitres=None,
@@ -1630,7 +1640,7 @@ class JointTxRxIM(IntensityModulationChannel):
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                          modulator_type=modulator_type,
                          dac_voltage_pp=dac_voltage_pp, dac_voltage_bias=dac_voltage_bias,
-                         dac_minmax_norm=dac_minmax_norm,
+                         dac_minmax_norm=dac_minmax_norm, dac_learnable_bias=dac_learnable_bias, dac_learnable_norm=dac_learnable_norm,
                          learn_rx=True, learn_tx=True, rx_filter_length=rx_filter_length,
                          tx_filter_length=tx_filter_length,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
@@ -1647,7 +1657,8 @@ class LinearFFEIM(IntensityModulationChannel):
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length, ffe_n_taps,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_voltage_pp, dac_voltage_bias, dac_minmax_norm: float | str = 'auto',
+                 dac_voltage_pp, dac_voltage_bias, dac_learnable_norm: bool, dac_learnable_bias: bool,
+                 dac_minmax_norm: float | str = 'auto',
                  modulator_type=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
                  dac_bitres=None, adc_bitres=None,
@@ -1656,7 +1667,7 @@ class LinearFFEIM(IntensityModulationChannel):
                          batch_size=batch_size, constellation=constellation,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                          dac_voltage_pp=dac_voltage_pp, dac_voltage_bias=dac_voltage_bias,
-                         dac_minmax_norm=dac_minmax_norm,
+                         dac_minmax_norm=dac_minmax_norm, dac_learnable_bias=dac_learnable_bias, dac_learnable_norm=dac_learnable_norm,
                          modulator_type=modulator_type, equaliser_config={'n_taps': ffe_n_taps},
                          learn_rx=False, learn_tx=False, rx_filter_length=rx_filter_length,
                          tx_filter_length=tx_filter_length,
@@ -1699,6 +1710,7 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
                  learn_rx, learn_tx, rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
                  dac_voltage_pp, dac_voltage_bias, wdm_channel_spacing_hz,
+                 dac_learnable_norm: bool, dac_learnable_bias: bool,
                  wdm_channel_selection_rel_cutoff, dac_minmax_norm: float | str = 'auto',
                  modulator_type='eam', equaliser_config: dict | None = None,
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
@@ -1710,7 +1722,7 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
                          learn_rx=learn_rx, learn_tx=learn_tx, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                          dac_voltage_pp=dac_voltage_pp, dac_voltage_bias=dac_voltage_bias,
-                         dac_minmax_norm=dac_minmax_norm,
+                         dac_minmax_norm=dac_minmax_norm, dac_learnable_bias=dac_learnable_bias, dac_learnable_norm=dac_learnable_norm,
                          modulator_type=modulator_type, equaliser_config=equaliser_config,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
@@ -1876,7 +1888,7 @@ class PulseShapingIMwithWDM(IntensityModulationChannelwithWDM):
                  rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
                  dac_voltage_pp, dac_voltage_bias, wdm_channel_spacing_hz,
-                 wdm_channel_selection_rel_cutoff,
+                 wdm_channel_selection_rel_cutoff, dac_learnable_norm: bool, dac_learnable_bias: bool,
                  modulator_type=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, dac_minmax_norm: float | str = 'auto',
                  adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
@@ -1887,6 +1899,7 @@ class PulseShapingIMwithWDM(IntensityModulationChannelwithWDM):
                          learn_rx=False, learn_tx=True, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                          dac_voltage_pp=dac_voltage_pp, dac_voltage_bias=dac_voltage_bias,
+                         dac_learnable_bias=dac_learnable_bias, dac_learnable_norm=dac_learnable_norm,
                          wdm_channel_spacing_hz=wdm_channel_spacing_hz,
                          wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                          modulator_type=modulator_type, equaliser_config=None,
@@ -1908,7 +1921,7 @@ class RxFilteringIMwithWDM(IntensityModulationChannelwithWDM):
                  rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
                  dac_voltage_pp, dac_voltage_bias, wdm_channel_spacing_hz,
-                 wdm_channel_selection_rel_cutoff,
+                 wdm_channel_selection_rel_cutoff, dac_learnable_norm: bool, dac_learnable_bias: bool,
                  modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, dac_minmax_norm: float | str = 'auto',
                  adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
@@ -1919,6 +1932,7 @@ class RxFilteringIMwithWDM(IntensityModulationChannelwithWDM):
                          learn_rx=True, learn_tx=False, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                          dac_voltage_pp=dac_voltage_pp, dac_voltage_bias=dac_voltage_bias,
+                         dac_learnable_bias=dac_learnable_bias, dac_learnable_norm=dac_learnable_norm,
                          wdm_channel_spacing_hz=wdm_channel_spacing_hz,
                          wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                          modulator_type=modulator_type, equaliser_config=None,
@@ -1940,7 +1954,7 @@ class JointTxRxIMwithWDM(IntensityModulationChannelwithWDM):
                  rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
                  dac_voltage_pp, dac_voltage_bias, wdm_channel_spacing_hz,
-                 wdm_channel_selection_rel_cutoff,
+                 wdm_channel_selection_rel_cutoff, dac_learnable_norm: bool, dac_learnable_bias: bool,
                  modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, dac_minmax_norm: float | str = 'auto',
                  adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
@@ -1951,6 +1965,7 @@ class JointTxRxIMwithWDM(IntensityModulationChannelwithWDM):
                          learn_rx=True, learn_tx=True, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                          dac_voltage_pp=dac_voltage_pp, dac_voltage_bias=dac_voltage_bias,
+                         dac_learnable_bias=dac_learnable_bias, dac_learnable_norm=dac_learnable_norm,
                          wdm_channel_spacing_hz=wdm_channel_spacing_hz,
                          wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                          modulator_type=modulator_type, equaliser_config=None,
@@ -1971,8 +1986,8 @@ class LinearFFEIMwithWDM(IntensityModulationChannelwithWDM):
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length, ffe_n_taps: int,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_voltage_pp, dac_voltage_bias, wdm_channel_spacing_hz,
-                 wdm_channel_selection_rel_cutoff,
+                 dac_voltage_pp, dac_voltage_bias, dac_learnable_norm: bool, dac_learnable_bias: bool,
+                 wdm_channel_spacing_hz, wdm_channel_selection_rel_cutoff,
                  modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, dac_minmax_norm: float | str = 'auto',
                  adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
@@ -1983,6 +1998,7 @@ class LinearFFEIMwithWDM(IntensityModulationChannelwithWDM):
                          learn_rx=False, learn_tx=False, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                          dac_voltage_pp=dac_voltage_pp, dac_voltage_bias=dac_voltage_bias,
+                         dac_learnable_bias=dac_learnable_bias, dac_learnable_norm=dac_learnable_norm,
                          wdm_channel_spacing_hz=wdm_channel_spacing_hz,
                          wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                          modulator_type=modulator_type, equaliser_config={'n_taps': ffe_n_taps},

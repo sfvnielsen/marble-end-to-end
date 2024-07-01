@@ -47,7 +47,9 @@ if __name__ == "__main__":
     use_1clr = True
 
     dac_voltage_pp = 4.0
-    dac_voltage_bias = 'negative_vpp'
+    dac_voltage_bias = -2.0
+    dac_learn_norm = True
+    dac_learn_bias = True
 
     # Configuration of electro absorption modulator
     modulator_type = 'eam'
@@ -64,7 +66,6 @@ if __name__ == "__main__":
         'carrier_wavelength': 1270,
         'zero_dispersion_wavelength': 1310,
         'dispersion_slope': 0.092
-        # 'dispersion_parameter': 16.0
     }
 
     # Configuration of the photodiode
@@ -93,7 +94,7 @@ if __name__ == "__main__":
     random_obj = np.random.default_rng(seed=seed)
 
     # Optimization parameters
-    learning_rate = 1e-3
+    learning_rate = 5e-3
     batch_size = 1000
 
     # Initialize learnable transmission system
@@ -101,9 +102,10 @@ if __name__ == "__main__":
                                              learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                              learn_tx=learn_tx, learn_rx=learn_rx, rrc_rolloff=rrc_rolloff,
                                              dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
+                                             dac_learnable_bias=dac_learn_bias, dac_learnable_norm=dac_learn_norm,
                                              tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                              adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
-                                             dac_bitres=None, adc_bitres=None, dac_minmax_norm=6.0,
+                                             dac_bitres=None, adc_bitres=None, dac_minmax_norm='auto',
                                              tx_filter_init_type='rrc', rx_filter_init_type='rrc',
                                              smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                                              modulator_type=modulator_type)
@@ -139,11 +141,12 @@ if __name__ == "__main__":
     # Run comparison method - RRC + RRC + FFE
     imdd_system_ffe = LinearFFEIM(sps=samples_per_symbol, baud_rate=baud_rate,
                                   learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
-                                  rrc_rolloff=rrc_rolloff, ffe_n_taps=25,
+                                  rrc_rolloff=rrc_rolloff, ffe_n_taps=rx_filter_length,
                                   dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
+                                  dac_learnable_bias=dac_learn_bias, dac_learnable_norm=dac_learn_norm,
                                   tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
                                   adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
-                                  dac_bitres=None, adc_bitres=None,
+                                  dac_bitres=None, adc_bitres=None, dac_minmax_norm=4.5,
                                   tx_filter_init_type='rrc', rx_filter_init_type='rrc',
                                   smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                                   modulator_type=modulator_type)
@@ -227,33 +230,66 @@ if __name__ == "__main__":
              ax)
 
     # Plot voltage-to-absorption function - compare with (Liang and Kahn)
-    v = torch.linspace(-imdd_system.dac.v_pp/2, imdd_system.dac.v_pp/2, 1000) + imdd_system.dac.v_bias
+    v = torch.linspace(dac_voltage_pp * imdd_system.dac.clamp_min + imdd_system.dac.v_bias,
+                       dac_voltage_pp * imdd_system.dac.clamp_max + imdd_system.dac.v_bias,
+                       1000)
 
     fig, ax = plt.subplots(figsize=FIGSIZE, ncols=2)
-    if modulator_type == 'mzm' :
-        ax[0].plot(v, 0.5 / imdd_system.modulator.vpi * (v + imdd_system.modulator.vb) * torch.pi)
-        ax[1].plot(v, imdd_system.modulator.forward(v))
-        fig.suptitle('Mach Zehnder')
-    elif modulator_type == 'ideal':
-        ax[0].plot(v, imdd_system.modulator.forward(v))
-    elif 'eam' in modulator_type:
-        alpha_db = imdd_system.modulator.spline_object.evaluate(v)
-        ax[0].plot(v, alpha_db)
-        ax[0].plot(imdd_system.modulator.x_knee_points, imdd_system.modulator.y_knee_points, 'ro')
-        ax[0].set_xlabel('Voltage')
-        ax[0].set_ylabel('Absorption [dB]')
-        ax[0].invert_xaxis()
-        ax[0].invert_yaxis()
-        ax[0].grid()
+    with torch.no_grad():
+        if modulator_type == 'mzm' :
+            ax[0].plot(v, 0.5 / imdd_system.modulator.vpi * (v + imdd_system.modulator.vb) * torch.pi)
+            ax[1].plot(v, imdd_system.modulator.forward(v))
+            fig.suptitle('Mach Zehnder')
+        elif modulator_type == 'ideal':
+            ax[0].plot(v, imdd_system.modulator.forward(v))
+        elif 'eam' in modulator_type:
+            alpha_db = imdd_system.modulator.spline_object.evaluate(v)
+            ax[0].plot(v, alpha_db)
+            ax[0].plot(imdd_system.modulator.x_knee_points, imdd_system.modulator.y_knee_points, 'ro')
+            ax[0].set_xlabel('Voltage')
+            ax[0].set_ylabel('Absorption [dB]')
+            ax[0].invert_xaxis()
+            ax[0].invert_yaxis()
+            ax[0].grid()
 
-        ax[1].plot(v, torch.absolute(imdd_system.modulator.forward(v)))
-        ax[1].set_xlabel('Voltage')
-        ax[1].set_ylabel('Optical field amplitude')
-        ax[1].grid()
+            ax[1].plot(v, torch.absolute(imdd_system.modulator.forward(v)))
+            ax[1].set_xlabel('Voltage')
+            ax[1].set_ylabel('Optical field amplitude')
+            ax[1].grid()
 
     if save_figures:
         fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_modulator_response.eps"), format='eps')
         fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_modulator_response.png"), dpi=DPI)
+
+    # Plot DAC normalization
+    aup = np.zeros((len(a) * samples_per_symbol,))
+    aup[::samples_per_symbol] = a
+    n_methods = 2
+    nbins = 100
+
+    fig, axs = plt.subplots(nrows=2, ncols=n_methods, sharex='row', figsize=(12, 7))
+    with torch.no_grad():
+        for s, (sys, sys_label) in enumerate(zip((imdd_system, imdd_system_ffe),
+                                                ['E2E', 'RRC+FFE'])):
+            
+            # Apply pulse shaper
+            x = sys.pulse_shaper.forward_numpy(torch.from_numpy(aup))
+
+            # Apply DAC
+            v = sys.dac.eval(x)
+
+            # Plot distributions (before and after DAC)
+            axs[0, s].hist(x.numpy(), bins=nbins)
+            axs[1, s].hist(v.numpy(), bins=nbins)
+
+            axs[0, s].set_title(f"Gain: {sys.dac.normalization.data:.3f} \n Bias {sys.dac.v_bias.data:.3f}")
+
+    
+    axs[0, 0].set_ylabel('Digital')
+    axs[1, 0].set_ylabel('Voltage')
+    fig.tight_layout()
+    fig.suptitle('DAC normalization')
+
 
     # Plot channel phase response
     f, channelH = imdd_system.channel.get_fq_filter(len(a) * samples_per_symbol)

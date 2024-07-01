@@ -46,8 +46,8 @@ if __name__ == "__main__":
     adc_bitres = 5
     dac_bitres = 5
     use_1clr = True
-    dac_voltage_pp = 2.0
-    dac_voltage_bias = -dac_voltage_pp/2
+    dac_voltage_pp = 3.5
+    dac_voltage_bias = 'negative_vpp'
     wdm_channel_selection_rel_cutoff = 1.1
 
     # Configuration of electro absorption modulator
@@ -101,6 +101,7 @@ if __name__ == "__main__":
                                      learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                      rrc_rolloff=rrc_rolloff,
                                      dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
+                                     dac_learnable_bias=True, dac_learnable_norm=True,
                                      wdm_channel_spacing_hz=wdm_channel_spacing_training,
                                      wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                                      tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
@@ -113,6 +114,7 @@ if __name__ == "__main__":
                                    learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                    rrc_rolloff=rrc_rolloff,
                                    dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
+                                   dac_learnable_bias=True, dac_learnable_norm=True,
                                    wdm_channel_spacing_hz=wdm_channel_spacing_training,
                                    wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                                    tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
@@ -125,6 +127,7 @@ if __name__ == "__main__":
                                    learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                    rrc_rolloff=rrc_rolloff,
                                    dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
+                                   dac_learnable_bias=True, dac_learnable_norm=True,
                                    wdm_channel_spacing_hz=wdm_channel_spacing_training,
                                    wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                                    tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
@@ -137,6 +140,7 @@ if __name__ == "__main__":
                                  learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                  rrc_rolloff=rrc_rolloff, ffe_n_taps=35,
                                  dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
+                                 dac_learnable_bias=True, dac_learnable_norm=True,
                                  wdm_channel_spacing_hz=wdm_channel_spacing_training,
                                  wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                                  tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
