@@ -8,7 +8,7 @@ from torchcubicspline import natural_cubic_spline_coeffs, NaturalCubicSpline
 from scipy.interpolate import CubicSpline
 from scipy.optimize import newton
 
-from .filtering import BesselFilter, AllPassFilter
+from .filtering import BesselFilter, MultiChannelBesselFilter, AllPassFilter
 
 
 class IdealLinearModulator(object):
@@ -116,7 +116,7 @@ class ElectroAbsorptionModulator(object):
         v = torch.clamp(v, *self.input_range)
 
         # Calculate absorption from voltage
-        alpha_db = self.spline_object.evaluate(v).squeeze()
+        alpha_db = self.spline_object.evaluate(v.contiguous()).squeeze()
 
         # Return transmitted field amplitude
         y = torch.sqrt(self.laser_power * torch.pow(10.0, -alpha_db / 10.0))
@@ -234,7 +234,7 @@ class DigitalToAnalogConverter(torch.nn.Module):
     """
     def __init__(self, bwl_cutoff, peak_to_peak_voltage, peak_to_peak_constellation: float | str,
                  fs, bias_voltage: float | str ='negative_vpp', bit_resolution=None, bessel_order=5,
-                 learnable_normalization=False, learnable_bias=False,
+                 learnable_normalization=False, learnable_bias=False, multi_channel: bool=False,
                  dtype=torch.float64, **kwargs) -> None:
         super().__init__(**kwargs)
 
@@ -276,7 +276,10 @@ class DigitalToAnalogConverter(torch.nn.Module):
         # Initialize bessel filter
         self.lpf = AllPassFilter()
         if bwl_cutoff is not None:
-            self.lpf = BesselFilter(bessel_order=bessel_order, cutoff_hz=bwl_cutoff, fs=fs, dtype=dtype)
+            if multi_channel:
+                self.lpf = MultiChannelBesselFilter(bessel_order=bessel_order, cutoff_hz=bwl_cutoff, fs=fs, dtype=dtype)
+            else:
+                self.lpf = BesselFilter(bessel_order=bessel_order, cutoff_hz=bwl_cutoff, fs=fs, dtype=dtype)
 
     def _clamp_voltage(self, x):
         return torch.clamp(x, self.clamp_min, self.clamp_max)

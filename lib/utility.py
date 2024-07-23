@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 from scipy.stats import norm
 from scipy.signal import correlate
 
@@ -85,8 +86,14 @@ def calculate_confusion_matrix(ahat, a):
 
 
 def decision_logic_torch(xhat, syms):
-    import torch
     # DEBUG function for torch
     absdiff = torch.abs(xhat[:, None] - syms[None, :])
     min_indices = torch.argmin(absdiff, axis=1)
     return syms[min_indices]
+
+
+def permute_symbols(xup: torch.TensorType, sps: int, random_gen):
+    xup_permed = torch.zeros_like(xup)
+    syms_permed = xup[::sps][torch.randperm(xup.shape[0] // sps, generator=random_gen)]
+    xup_permed[::sps] = syms_permed
+    return xup_permed

@@ -65,7 +65,7 @@ class LinearFeedForwardEqualiser(GenericTorchEqualizer):
         weights = np.zeros((n_taps, ))
         weights[n_taps // 2] = 1.0
 
-        self.filter = FIRfilter(filter_weights=weights, stride=self.samples_per_symbol, normalize=False,
+        self.filter = FIRfilter(filter_weights=weights, stride=self.samples_per_symbol,
                                    trainable=True, dtype=dtype)
 
     def get_parameters(self):

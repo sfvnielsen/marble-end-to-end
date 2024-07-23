@@ -11,8 +11,9 @@ from scipy.signal import bessel, lfilter, freqz, group_delay
 from scipy.fft import fftshift
 from commpy.filters import rrcosfilter
 
-from .filtering import FIRfilter, BesselFilter, BrickWallFilter, AllPassFilter, GaussianFqFilter, filter_initialization
-from .utility import find_max_variance_sample, symbol_sync
+from .filtering import FIRfilter, BesselFilter, BrickWallFilter, AllPassFilter, GaussianFqFilter,\
+                       MultiChannelFIRfilter, MultiChannelBesselFilter, filter_initialization
+from .utility import find_max_variance_sample, symbol_sync, permute_symbols
 from .devices import ElectroAbsorptionModulator, MyNonLinearEAM, Photodiode,\
                      IdealLinearModulator, DigitalToAnalogConverter, AnalogToDigitalConverter,\
                      MachZehnderModulator
@@ -509,7 +510,7 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
                  dac_bwl_relative_cutoff, learn_tx: bool, learn_rx: bool, equaliser_config: dict | None = None,
                  tx_filter_init_type='dirac', rx_filter_init_type='dirac',
                  print_interval=int(5e4), use_brickwall=False, use_1clr=False,
-                 rrc_rolloff=0.5) -> None:
+                 rrc_rolloff=0.5, tx_multi_channel: bool = False) -> None:
         super().__init__(sps=sps,
                          esn0_db=esn0_db,
                          baud_rate=baud_rate,
@@ -531,7 +532,11 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
             g = g / np.linalg.norm(g)
             tx_filter_init = g
 
-        self.pulse_shaper = FIRfilter(filter_weights=tx_filter_init, trainable=learn_tx)
+        self.pulse_shaper = AllPassFilter()
+        if tx_multi_channel:
+            self.pulse_shaper = MultiChannelFIRfilter(filter_weights=tx_filter_init, trainable=learn_tx)
+        else:
+            self.pulse_shaper = FIRfilter(filter_weights=tx_filter_init, trainable=learn_tx)
 
         # Define rx filter - downsample to 1 sps as part of convolution (stride)
         rx_filter_init = np.zeros((rx_filter_length,))
@@ -564,7 +569,10 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
             if use_brickwall:
                 self.dac = BrickWallFilter(filter_length=512, cutoff_hz=info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
             else:
-                self.dac = BesselFilter(bessel_order=5, cutoff_hz=info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
+                if tx_multi_channel:
+                    self.dac = MultiChannelBesselFilter(bessel_order=5, cutoff_hz=info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
+                else:
+                    self.dac = BesselFilter(bessel_order=5, cutoff_hz=info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
 
         # Analog-to-digial (ADC) converter
         self.adc = AllPassFilter()
@@ -800,7 +808,7 @@ class BasicAWGNwithBWLandWDM(BasicAWGNwithBWL):
                          tx_filter_length, rx_filter_length, adc_bwl_relative_cutoff,
                          dac_bwl_relative_cutoff, learn_tx, learn_rx, equaliser_config,
                          tx_filter_init_type, rx_filter_init_type, print_interval,
-                         use_brickwall, use_1clr, rrc_rolloff)
+                         use_brickwall, use_1clr, rrc_rolloff, tx_multi_channel=True)
         self.wdm_n_channels = 3  # always three channels during training
         self.wdm_channel_spacing_hz = wdm_channel_spacing_hz
         self.torch_seed = torch_seed  # used for generating interferer channels
@@ -811,29 +819,25 @@ class BasicAWGNwithBWLandWDM(BasicAWGNwithBWL):
                                                          Fs=1/self.Ts)
 
     def forward(self, symbols_up: torch.TensorType):
-        rng_gen = torch.random.manual_seed(self.torch_seed)
-        symbols_up_chan = torch.zeros((symbols_up.shape[0], self.wdm_n_channels), dtype=symbols_up.dtype)
-        symbols_up_chan[::, self.wdm_n_channels // 2] = symbols_up
-        channels_to_fill = [i for i in range(self.wdm_n_channels) if i != self.wdm_n_channels // 2]  # all except middle
-        for cf in channels_to_fill:
-            symbols_up_chan[0::self.sps, cf] = symbols_up[::self.sps][torch.randperm(symbols_up.shape[0] // self.sps, generator=rng_gen)]
-
         # Prepare WDM channel
-        tx_wdm = torch.zeros((symbols_up_chan.shape[0], ), dtype=torch.complex128)
-        channel_fq_grid = torch.arange(-np.floor(self.wdm_n_channels / 2), np.floor(self.wdm_n_channels / 2) + 1, 1) * self.wdm_channel_spacing_hz
+        rng_gen = torch.random.manual_seed(self.torch_seed)
+        channel_fq_grid = torch.Tensor([-1.0, 0.0, 1.0]) * self.wdm_channel_spacing_hz
 
-        for c in range(self.wdm_n_channels):
-            x = self.pulse_shaper.forward(symbols_up_chan[:, c])
+        symbols_up_chan = torch.stack((permute_symbols(symbols_up, self.sps, rng_gen),
+                                       symbols_up,
+                                       permute_symbols(symbols_up, self.sps, rng_gen)), dim=1)
 
-            x = x / self.normalization_constant
+        # Apply same pulse shaper to all channels (MultiChannelFIRfilter)
+        x = self.pulse_shaper.forward(symbols_up_chan)
+        x = x / self.normalization_constant
 
-            # Apply bandwidth limitation in the DAC
-            x_lp = self.dac.forward(x)
+        # Apply bandwidth limitation in the DAC (multi-channel as well)
+        x_lp = self.dac.forward(x)
 
-            tx_wdm += x_lp * torch.exp(1j * 2 * torch.pi * (channel_fq_grid[c] * self.Ts) * torch.arange(0, x.shape[0], dtype=torch.float64))
+        tx_wdm = torch.sum(x_lp * torch.exp(1j * 2 * torch.pi * (channel_fq_grid[None, :] * self.Ts) * torch.arange(0, x_lp.shape[0], dtype=torch.float64)[:, None]), dim=1)
 
         with torch.no_grad():
-            noise_std = self.calculate_noise_std(x_lp)  # just calculate the noise_std based on the last channel
+            noise_std = self.calculate_noise_std(x_lp[:, 1])  # just calculate the noise_std based on the channel of interest
         y = tx_wdm + noise_std * torch.randn(x_lp.shape)
 
         # Low-pass filter to select middle channel
@@ -852,31 +856,27 @@ class BasicAWGNwithBWLandWDM(BasicAWGNwithBWL):
         rx_eq_out = rx_eq_out / torch.sqrt(torch.mean(torch.square(rx_eq_out))) * self.constellation_scale
 
         return rx_eq_out
-    
+
     def _eval(self, symbols_up: torch.TensorType, batch_size: int, decimate: bool = True):
-        rng_gen = torch.random.manual_seed(self.torch_seed)
-        symbols_up_chan = torch.zeros((symbols_up.shape[0], self.wdm_n_channels), dtype=symbols_up.dtype)
-        symbols_up_chan[::, self.wdm_n_channels // 2] = symbols_up
-        channels_to_fill = [i for i in range(self.wdm_n_channels) if i != self.wdm_n_channels // 2]  # all except middle
-        for cf in channels_to_fill:
-            symbols_up_chan[0::self.sps, cf] = symbols_up[::self.sps][torch.randperm(symbols_up.shape[0] // self.sps, generator=rng_gen)]
-
         # Prepare WDM channel
-        tx_wdm = torch.zeros((symbols_up_chan.shape[0], ), dtype=torch.complex128)
-        channel_fq_grid = torch.arange(-np.floor(self.wdm_n_channels / 2), np.floor(self.wdm_n_channels / 2) + 1, 1) * self.wdm_channel_spacing_hz
+        rng_gen = torch.random.manual_seed(self.torch_seed)
+        channel_fq_grid = torch.Tensor([-1.0, 0.0, 1.0]) * self.wdm_channel_spacing_hz
 
-        for c in range(self.wdm_n_channels):
-            x = self.pulse_shaper.forward_numpy(symbols_up_chan[:, c])
+        symbols_up_chan = torch.stack((permute_symbols(symbols_up, self.sps, rng_gen),
+                                       symbols_up,
+                                       permute_symbols(symbols_up, self.sps, rng_gen)), dim=1)
 
-            x = x / self.normalization_constant
+        # Apply same pulse shaper to all channels (MultiChannelFIRfilter)
+        x = self.pulse_shaper.forward_numpy(symbols_up_chan)
+        x = x / self.normalization_constant
 
-            # Apply bandwidth limitation in the DAC
-            x_lp = self.dac.forward_batched(x, batch_size=batch_size)
+        # Apply bandwidth limitation in the DAC (multi-channel as well)
+        x_lp = self.dac.forward_numpy(x)
 
-            tx_wdm += x_lp * torch.exp(1j * 2 * torch.pi * (channel_fq_grid[c] * self.Ts) * torch.arange(0, x.shape[0], dtype=torch.float64))
+        tx_wdm = torch.sum(x_lp * torch.exp(1j * 2 * torch.pi * (channel_fq_grid[None, :] * self.Ts) * torch.arange(0, x_lp.shape[0], dtype=torch.float64)[:, None]), dim=1)
 
         with torch.no_grad():
-            noise_std = self.calculate_noise_std(x_lp)  # just calculate the noise_std based on the last channel
+            noise_std = self.calculate_noise_std(x_lp[:, 1])  # just calculate the noise_std based on the channel of interest
         y = tx_wdm + noise_std * torch.randn(x_lp.shape)
 
         # Low-pass filter to select middle channel
@@ -1324,7 +1324,8 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
                  dac_bitres=None, adc_bitres=None, dac_minmax_norm: float | str = 'auto',
-                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
+                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000),
+                 multi_channel: bool=False) -> None:
         super().__init__(sps=sps, esn0_db=np.nan, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
                          eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval)
@@ -1341,7 +1342,11 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
             g = g / np.linalg.norm(g)
             tx_filter_init = g
 
-        self.pulse_shaper = FIRfilter(filter_weights=tx_filter_init, trainable=learn_tx)
+        self.pulse_shaper = AllPassFilter()
+        if multi_channel:
+            self.pulse_shaper = MultiChannelFIRfilter(filter_weights=tx_filter_init, trainable=learn_tx)
+        else:
+            self.pulse_shaper = FIRfilter(filter_weights=tx_filter_init, trainable=learn_tx)
 
         # Define rx filter - downsample to 1 sps as part of convolution (stride)
         rx_filter_init = np.zeros((rx_filter_length,))
@@ -1394,7 +1399,8 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
                                             bwl_cutoff=None if dac_bwl_relative_cutoff is None else info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts,
                                             bessel_order=5, bit_resolution=dac_bitres,
                                             learnable_bias=dac_learnable_bias,
-                                            learnable_normalization=dac_learnable_norm)
+                                            learnable_normalization=dac_learnable_norm,
+                                            multi_channel=multi_channel)
 
         # Analog-to-digial (ADC) converter
         self.adc = AnalogToDigitalConverter(bwl_cutoff=None if adc_bwl_relative_cutoff is None else info_bw * adc_bwl_relative_cutoff, fs=1/self.Ts,
@@ -1460,7 +1466,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
             params_to_return.append({"params": self.dac.parameters()})
         if self.use_eq:
             params_to_return += self.equaliser.get_parameters()
-        
+
         return params_to_return
 
     def zero_gradients(self):
@@ -1727,7 +1733,8 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          rrc_rolloff=rrc_rolloff, dac_bitres=None, adc_bitres=None,
-                         eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval)
+                         eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
+                         multi_channel=True)
 
         self.wdm_n_channels = 3  # always three channels during training
         self.wdm_channel_spacing_hz = wdm_channel_spacing_hz
@@ -1740,27 +1747,25 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
 
 
     def forward(self, symbols_up: torch.TensorType):
-        rng_gen = torch.random.manual_seed(self.torch_seed)
-        symbols_up_chan = torch.zeros((symbols_up.shape[0], self.wdm_n_channels), dtype=symbols_up.dtype)
-        symbols_up_chan[::, self.wdm_n_channels // 2] = symbols_up
-        channels_to_fill = [i for i in range(self.wdm_n_channels) if i != self.wdm_n_channels // 2]  # all except middle
-        for cf in channels_to_fill:
-            symbols_up_chan[0::self.sps, cf] = symbols_up[::self.sps][torch.randperm(symbols_up.shape[0] // self.sps, generator=rng_gen)]
-
         # Prepare WDM channel
-        tx_wdm = torch.zeros((symbols_up_chan.shape[0], ), dtype=torch.complex128)
-        channel_fq_grid = torch.arange(-np.floor(self.wdm_n_channels / 2), np.floor(self.wdm_n_channels / 2) + 1, 1) * self.wdm_channel_spacing_hz
+        rng_gen = torch.random.manual_seed(self.torch_seed)
+        channel_fq_grid = torch.Tensor([-1.0, 0.0, 1.0]) * self.wdm_channel_spacing_hz
 
-        for c in range(self.wdm_n_channels):
-            x = self.pulse_shaper.forward(symbols_up_chan[:, c])
+        symbols_up_chan = torch.stack((permute_symbols(symbols_up, self.sps, rng_gen),
+                                       symbols_up,
+                                       permute_symbols(symbols_up, self.sps, rng_gen)), dim=1)
 
-            # Apply bandwidth limitation in the DAC
-            v = self.dac.forward(x)
+        # Apply pulse shaper (to all channels independently)
+        x = self.pulse_shaper.forward(symbols_up_chan)
 
-            # Apply EAM
-            x_eam = self.modulator.forward(v)
+        # Apply bandwidth limitation in the DAC
+        v = self.dac.forward(x)
 
-            tx_wdm += x_eam * torch.exp(1j * 2 * torch.pi * (channel_fq_grid[c] * self.Ts) * torch.arange(0, x.shape[0], dtype=torch.float64))
+        # Apply EAM
+        x_eam = self.modulator.forward(v)
+
+        # Construct WDM signal
+        tx_wdm = torch.sum(x_eam * torch.exp(1j * 2 * torch.pi * (channel_fq_grid[None, :] * self.Ts) * torch.arange(0, x.shape[0], dtype=torch.float64)[:, None]), dim=1)
 
         # Apply SMF
         x_smf = self.channel.forward(tx_wdm)
@@ -1790,36 +1795,34 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
 
     def eval_tx(self, symbols_up: torch.TensorType, n_channels: int, channel_spacing_hz: float,
                 batch_size: int, dac_bitres: int | None = None, torch_seed: int = 0):
-        # Generate interferer symbols - randomly permute the input sequence
-        # Channel of interest will be the "middle" chanel (idx = n_channels // 2)
-        rng_gen = torch.random.manual_seed(torch_seed)
-        symbols_up_chan = torch.zeros((symbols_up.shape[0], n_channels), dtype=symbols_up.dtype)
-        symbols_up_chan[::, n_channels // 2] = symbols_up
-        channels_to_fill = [i for i in range(n_channels) if i != n_channels // 2]  # all except middle
-        for cf in channels_to_fill:
-            symbols_up_chan[0::self.sps, cf] = symbols_up[::self.sps][torch.randperm(symbols_up.shape[0] // self.sps, generator=rng_gen)]
-
-        # Prepare WDM channel
-        tx_wdm = torch.zeros((symbols_up_chan.shape[0], ), dtype=torch.complex128)
-        channel_fq_grid = torch.arange(-np.floor(n_channels / 2), np.floor(n_channels / 2) + 1, 1) * channel_spacing_hz
-
         # Set DAC bit resolution
         self.dac.set_bitres(dac_bitres)
+
+        # Prepare WDM channel
+        # Generate interferer symbols - randomly permute the input sequence
+        rng_gen = torch.random.manual_seed(torch_seed)
+        channel_fq_grid = torch.Tensor([-1.0, 0.0, 1.0]) * channel_spacing_hz
+
+        symbols_up_chan = torch.stack((permute_symbols(symbols_up, self.sps, rng_gen),
+                                       symbols_up,
+                                       permute_symbols(symbols_up, self.sps, rng_gen)), dim=1)
 
         print(f"Channel spacing: {channel_spacing_hz / 1e9} GHz")
         print(f"Channel grid: {channel_fq_grid / 1e9} GHz")
 
-        for c in range(n_channels):
-            x = self.pulse_shaper.forward_numpy(symbols_up_chan[:, c])
+        # Apply pulse shaper (to all channels independently)
+        x = self.pulse_shaper.forward(symbols_up_chan)
 
-            # Apply bandwidth limitation in the DAC
-            v = self.dac.eval(x)
+        # Apply bandwidth limitation in the DAC
+        v = self.dac.forward(x)
 
-            # Apply EAM
-            x_eam = self.modulator.forward(v)
-            print(f"EAM (channel {c}): Power at output {10.0 * np.log10(np.average(np.square(np.absolute(x_eam.detach().numpy()))) / 1e-3)} [dBm]")
+        # Apply EAM
+        x_eam = self.modulator.forward(v)
 
-            tx_wdm += x_eam * torch.exp(1j * 2 * torch.pi * (channel_fq_grid[c] * self.Ts) * torch.arange(0, x.shape[0], dtype=torch.float64))
+        # Construct WDM signal
+        tx_wdm = torch.sum(x_eam * torch.exp(1j * 2 * torch.pi * (channel_fq_grid[None, :] * self.Ts) * torch.arange(0, x.shape[0], dtype=torch.float64)[:, None]), dim=1)
+
+        print(f"EAM (channel 1): Power at output {10.0 * np.log10(np.average(np.square(np.absolute(x_eam[:, 1].detach().numpy()))) / 1e-3)} [dBm]")
 
         return tx_wdm
 

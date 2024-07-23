@@ -41,24 +41,20 @@ class AllPassFilter(torch.nn.Module):
         return 0
 
 class FIRfilter(torch.nn.Module):
-    def __init__(self, filter_weights: npt.ArrayLike, stride=1, normalize=False, trainable=False, dtype=torch.float64, *args, **kwargs) -> None:
+    def __init__(self, filter_weights: npt.ArrayLike, stride=1, trainable=False, dtype=torch.float64, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         torch_filter = torch.from_numpy(np.copy(filter_weights))
         self.filter_length = len(filter_weights)
         self.padding = ((self.filter_length - 1) // 2, (self.filter_length - self.filter_length % 2) // 2)
         self.conv_weights = torch.nn.Parameter(torch_filter, requires_grad=trainable)
-        self.normalize = normalize
         self.trainalbe = trainable
         self.stride = stride
 
     def forward(self, x):
-        # input x assumed to be [timesteps,]
+        # input x assumed to be [timesteps, ]
         xpadded = torchF.pad(x, self.padding, mode='constant', value=0.0)[None, None, :]
         f_out = torchF.conv1d(xpadded, torch.flip(self.conv_weights, (0,))[None, None, :],
                               stride=self.stride).squeeze_()
-        if self.normalize:
-            #f_out = f_out.div_(torch.sqrt(torch.sum(torch.square(self.conv.weight))))
-            f_out = f_out.div_(torch.sqrt(torch.sum(torch.square(self.conv_weights))))
         return f_out
 
     def forward_batched(self, x, batch_size=2000):
@@ -121,6 +117,30 @@ class FIRfilter(torch.nn.Module):
         self.stride = new_stride
 
 
+class MultiChannelFIRfilter(FIRfilter):
+    """
+        Applies same FIR filter to n channels
+    """
+    def forward(self, x):
+        # input x assumed to be [timesteps, n_channels]
+        # xpadded = torch.permute(torchF.pad(x, self.padding, mode='constant', value=0.0), (1,0))[None, :, :]
+        f_out = torchF.conv1d(torch.permute(x, (1,0)), torch.flip(self.conv_weights, (0,))[None, None, :].repeat(x.shape[1], 1, 1),
+                              stride=self.stride, padding=self.padding[0],
+                              groups=x.shape[1]).squeeze_()
+        return torch.permute(f_out, (1, 0))
+
+    def forward_batched(self, x, batch_size=2000):
+        raise NotImplementedError
+
+    def forward_numpy(self, x: torch.TensorType):
+        xnp = x.numpy()
+        y = np.empty((len(xnp) // self.stride, x.shape[0]))
+        for i in range(x.shape[1]):
+            y[:, i] = np.convolve(np.pad(xnp[:, i], self.padding, mode='constant', constant_values=0.0),
+                                self.conv_weights.numpy(), mode='valid')[::self.stride]
+        return torch.from_numpy(y)
+
+
 class BesselFilter(torch.nn.Module):
     """
         Bessel filter as a torch module. No learnable parameters.
@@ -156,6 +176,27 @@ class BesselFilter(torch.nn.Module):
     
     def get_sample_delay(self):
         return self.delay
+
+
+class MultiChannelBesselFilter(BesselFilter):
+    """
+        Bessel filter as a torch module. No learnable parameters.
+    """
+    def forward(self, x):
+        # lfilter assumes input is between -1 and 1. Do so and rescale afterwards.
+        xmax = torch.max(torch.abs(x))
+        return torch.permute(xmax *  lfilter(torch.permute(x, (1, 0)) / xmax, self.filter_a, self.filter_b), (1,0))
+    
+    def forward_numpy(self, y):
+        # convert to numpy - uses scipys lfilter and coverts back
+        # only to be used during eval
+        ynp = y.numpy()
+        y_out = np.zeros_like(ynp)
+        for i in range(ynp.shape[1]):
+            y_out[:, i] = scipy_lfilter(self.filter_b.numpy(),
+                                        self.filter_a.numpy(),
+                                        ynp[:, i])
+        return torch.from_numpy(y_out)
 
 
 class BrickWallFilter(torch.nn.Module):
