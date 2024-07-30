@@ -40,16 +40,20 @@ if __name__ == "__main__":
     rrc_rolloff = 0.01
     learn_tx, tx_filter_length = True, 25
     learn_rx, rx_filter_length = True, 25
-    dac_bwl_relative_cutoff = 0.9  # low-pass filter cuttoff relative to information bandwidth
-    adc_bwl_relative_cutoff = 0.9
     eval_adc_bitres = 5
     eval_dac_bitres = 5
     use_1clr = True
+    
+    # Configuration for the DAC
+    dac_config = {
+        'peak_to_peak_voltage': 4.0,
+        'bias_voltage': -2.0,
+        'bwl_cutoff': 45e9,  # Hz
+        'learnable_normalization': True,
+        'learnable_bias': True
+    }
 
-    dac_voltage_pp = 4.0
-    dac_voltage_bias = -2.0
-    dac_learn_norm = True
-    dac_learn_bias = True
+    adc_bwl_cutoff_hz = 45e9  # same as dac
 
     # Configuration of electro absorption modulator
     modulator_type = 'eam'
@@ -76,11 +80,12 @@ if __name__ == "__main__":
         'impedance_load': 50.0
     }
 
+    
     figtitles = 'pulseshaping' if learn_tx else 'rxfilt'
     if learn_tx and learn_rx:
         figtitles = 'both'
 
-    figprefix = f"{FIGPREFIX}_{figtitles}_vpp{dac_voltage_pp}_chanlength{smf_config['fiber_length']}"
+    figprefix = f"{FIGPREFIX}_{figtitles}_vpp{dac_config['peak_to_peak_voltage']}_chanlength{smf_config['fiber_length']}"
 
     if not os.path.exists(FIGURE_DIR):
         os.mkdir(FIGURE_DIR)
@@ -101,23 +106,20 @@ if __name__ == "__main__":
     imdd_system = IntensityModulationChannel(sps=samples_per_symbol, baud_rate=baud_rate,
                                              learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                              learn_tx=learn_tx, learn_rx=learn_rx, rrc_rolloff=rrc_rolloff,
-                                             dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
-                                             dac_learnable_bias=dac_learn_bias, dac_learnable_norm=dac_learn_norm,
                                              tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
-                                             adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
-                                             dac_bitres=None, adc_bitres=None, dac_minmax_norm='auto',
+                                             adc_bwl_cutoff_hz=adc_bwl_cutoff_hz, adc_bitres=None, dac_minmax_norm='auto',
                                              tx_filter_init_type='rrc', rx_filter_init_type='rrc',
                                              smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
-                                             modulator_type=modulator_type)
+                                             modulator_type=modulator_type, dac_config=dac_config)
 
     imdd_system.initialize_optimizer()
 
     # Get the LPF filters
     adc_filter_b, adc_filter_a = None, None
     dac_filter_b, dac_filter_a = None, None
-    if adc_bwl_relative_cutoff:
+    if adc_bwl_cutoff_hz:
         adc_filter_b, adc_filter_a = imdd_system.adc.get_lpf_filter()
-    if dac_bwl_relative_cutoff:
+    if dac_config['bwl_cutoff']:
         dac_filter_b, dac_filter_a = imdd_system.dac.get_lpf_filter()
 
     # Generate training data
@@ -142,14 +144,11 @@ if __name__ == "__main__":
     imdd_system_ffe = LinearFFEIM(sps=samples_per_symbol, baud_rate=baud_rate,
                                   learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                   rrc_rolloff=rrc_rolloff, ffe_n_taps=rx_filter_length,
-                                  dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
-                                  dac_learnable_bias=dac_learn_bias, dac_learnable_norm=dac_learn_norm,
                                   tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
-                                  adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
-                                  dac_bitres=None, adc_bitres=None, dac_minmax_norm=4.5,
+                                  adc_bitres=None, dac_minmax_norm='auto',
                                   tx_filter_init_type='rrc', rx_filter_init_type='rrc',
                                   smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
-                                  modulator_type=modulator_type)
+                                  modulator_type=modulator_type, dac_config=dac_config, adc_bwl_cutoff_hz=adc_bwl_cutoff_hz)
 
     imdd_system_ffe.initialize_optimizer()
     imdd_system_ffe.optimize(a_train)
@@ -167,9 +166,9 @@ if __name__ == "__main__":
 
         # Calculate the total response of the system (includuing LPFs)
         total_response = np.copy(txfilt)
-        if dac_bwl_relative_cutoff:
+        if dac_config['bwl_cutoff']:
             total_response = lfilter(dac_filter_b, dac_filter_a, total_response)
-        if adc_bwl_relative_cutoff:
+        if adc_bwl_cutoff_hz:
             total_response = lfilter(adc_filter_b, adc_filter_a, total_response)
         total_response = np.convolve(total_response, rxfilt)
 
@@ -184,10 +183,10 @@ if __name__ == "__main__":
         plot_fft_filter_response(total_response, ax[1, 2], Ts=sys.Ts, plot_label=label)
 
     # Plot the ADC/DAC LPF filters on top of respective Tx and Rx
-    if dac_bwl_relative_cutoff:
+    if dac_config['bwl_cutoff']:
         plot_fft_ab_response(dac_filter_b, dac_filter_a, ax[1, 0], Ts=sys.Ts, plot_label='DAC')
 
-    if adc_bwl_relative_cutoff:
+    if adc_bwl_cutoff_hz:
         plot_fft_ab_response(adc_filter_b, adc_filter_a, ax[1, 1], Ts=sys.Ts, plot_label='ADC')
 
     # Pretty labeling
@@ -230,8 +229,8 @@ if __name__ == "__main__":
              ax)
 
     # Plot voltage-to-absorption function - compare with (Liang and Kahn)
-    v = torch.linspace(dac_voltage_pp * imdd_system.dac.clamp_min + imdd_system.dac.v_bias,
-                       dac_voltage_pp * imdd_system.dac.clamp_max + imdd_system.dac.v_bias,
+    v = torch.linspace(dac_config['peak_to_peak_voltage'] * imdd_system.dac.clamp_min + imdd_system.dac.v_bias,
+                       dac_config['peak_to_peak_voltage'] * imdd_system.dac.clamp_max + imdd_system.dac.v_bias,
                        1000)
 
     fig, ax = plt.subplots(figsize=FIGSIZE, ncols=2)

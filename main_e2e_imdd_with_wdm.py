@@ -8,7 +8,8 @@ import torch
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-from scipy.signal import lfilter
+import seaborn as sns
+import pandas as pd
 
 from lib.utility import calc_ser_pam
 from lib.systems import PulseShapingIMwithWDM, RxFilteringIMwithWDM, JointTxRxIMwithWDM, LinearFFEIMwithWDM
@@ -41,14 +42,21 @@ if __name__ == "__main__":
     rrc_rolloff = 0.01
     learn_tx, tx_filter_length = True, 65
     learn_rx, rx_filter_length = True, 65
-    dac_bwl_relative_cutoff = 0.9  # low-pass filter cuttoff relative to information bandwidth
-    adc_bwl_relative_cutoff = 0.9
-    adc_bitres = 5
-    dac_bitres = 5
+    eval_adc_bitres = 5
+    eval_dac_bitres = 5
     use_1clr = True
-    dac_voltage_pp = 3.5
-    dac_voltage_bias = 'negative_vpp'
     wdm_channel_selection_rel_cutoff = 1.1
+
+    # Configuration for DAC (and ADC)
+    dac_config = {
+        'peak_to_peak_voltage': 4.0,
+        'bias_voltage': 'negative_vpp',
+        'bwl_cutoff': 45e9,  # Hz
+        'learnable_normalization': True,
+        'learnable_bias': True
+    }
+
+    adc_bwl_cutoff_hz = 45e9  # same as dac
 
     # Configuration of electro absorption modulator
     modulator_type = 'eam'
@@ -76,10 +84,8 @@ if __name__ == "__main__":
         'impedance_load': 50.0
     }
 
-    # WDM config - used during evaluation
-    wdm_channel_spacing_training = baud_rate * 1.5
-    wdm_channel_spacings = np.array([baud_rate * 1.05, baud_rate * 1.25, baud_rate * 1.5, baud_rate * 2.0, baud_rate * 3.0])
-    wdm_n_channels = 3
+    # WDM config
+    wdm_channel_spacing = baud_rate * 1.5
 
     if not os.path.exists(FIGURE_DIR):
         os.mkdir(FIGURE_DIR)
@@ -100,54 +106,42 @@ if __name__ == "__main__":
     joint_tx_rx = JointTxRxIMwithWDM(sps=samples_per_symbol, baud_rate=baud_rate,
                                      learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                      rrc_rolloff=rrc_rolloff,
-                                     dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
-                                     dac_learnable_bias=True, dac_learnable_norm=True,
-                                     wdm_channel_spacing_hz=wdm_channel_spacing_training,
+                                     wdm_channel_spacing_hz=wdm_channel_spacing,
                                      wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                                      tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
-                                     adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                      tx_filter_init_type='rrc', rx_filter_init_type='rrc',
                                      smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
-                                     modulator_type=modulator_type)
+                                     modulator_type=modulator_type, dac_config=dac_config, adc_bwl_cutoff_hz=adc_bwl_cutoff_hz)
 
     ps_sys = PulseShapingIMwithWDM(sps=samples_per_symbol, baud_rate=baud_rate,
                                    learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                    rrc_rolloff=rrc_rolloff,
-                                   dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
-                                   dac_learnable_bias=True, dac_learnable_norm=True,
-                                   wdm_channel_spacing_hz=wdm_channel_spacing_training,
+                                   wdm_channel_spacing_hz=wdm_channel_spacing,
                                    wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                                    tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
-                                   adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                    tx_filter_init_type='rrc', rx_filter_init_type='rrc',
                                    smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
-                                   modulator_type=modulator_type)
+                                   modulator_type=modulator_type, dac_config=dac_config, adc_bwl_cutoff_hz=adc_bwl_cutoff_hz)
 
     rxf_sys = RxFilteringIMwithWDM(sps=samples_per_symbol, baud_rate=baud_rate,
                                    learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                    rrc_rolloff=rrc_rolloff,
-                                   dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
-                                   dac_learnable_bias=True, dac_learnable_norm=True,
-                                   wdm_channel_spacing_hz=wdm_channel_spacing_training,
+                                   wdm_channel_spacing_hz=wdm_channel_spacing,
                                    wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                                    tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
-                                   adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                    tx_filter_init_type='rrc', rx_filter_init_type='rrc',
                                    smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
-                                   modulator_type=modulator_type)
+                                   modulator_type=modulator_type, dac_config=dac_config, adc_bwl_cutoff_hz=adc_bwl_cutoff_hz)
     
     ffe_sys = LinearFFEIMwithWDM(sps=samples_per_symbol, baud_rate=baud_rate,
                                  learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
-                                 rrc_rolloff=rrc_rolloff, ffe_n_taps=35,
-                                 dac_voltage_bias=dac_voltage_bias, dac_voltage_pp=dac_voltage_pp,
-                                 dac_learnable_bias=True, dac_learnable_norm=True,
-                                 wdm_channel_spacing_hz=wdm_channel_spacing_training,
+                                 rrc_rolloff=rrc_rolloff, ffe_n_taps=rx_filter_length,
+                                 wdm_channel_spacing_hz=wdm_channel_spacing,
                                  wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                                  tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
-                                 adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                  tx_filter_init_type='rrc', rx_filter_init_type='rrc',
                                  smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
-                                 modulator_type=modulator_type)
+                                 modulator_type=modulator_type, dac_config=dac_config, adc_bwl_cutoff_hz=adc_bwl_cutoff_hz)
     
 
     # Generate training data
@@ -160,7 +154,7 @@ if __name__ == "__main__":
     bit_sequence = random_obj.integers(0, 2, size=n_bits)
     a = modulation_scheme.modulate(bit_sequence)
 
-    res_dict = dict()
+    res_dicts = []
     for imdd_system, system_label in zip([joint_tx_rx, ps_sys, rxf_sys, ffe_sys],
                                          ['PS \& RxF', 'PS', 'RxF', 'RRC \& FFE']):
 
@@ -169,26 +163,25 @@ if __name__ == "__main__":
         # Fit
         imdd_system.optimize(a_train)
 
-        ser_pr_spacing = np.zeros_like(wdm_channel_spacings)
-        for cs, channel_spacing in enumerate(wdm_channel_spacings):
-            rx_out = imdd_system.evaluate(a, channel_spacing_hz=channel_spacing, n_channels=wdm_n_channels)
-            ser, delay = calc_ser_pam(rx_out, a, discard=100)
-            print(f"SER: {ser} (delay: {delay}) [channel spacing: {channel_spacing / 1e9} GHz]")
+        # Evaluate
+        rx_out = imdd_system.evaluate(a, dac_bitres=eval_dac_bitres, adc_bitres=eval_adc_bitres)
+        ser, delay = calc_ser_pam(rx_out, a, discard=100)
+        print(f"SER: {ser} (delay: {delay}) [channel spacing: {wdm_channel_spacing / 1e9} GHz]")
 
-            ser_pr_spacing[cs] = ser
-        
-        res_dict[system_label] = ser_pr_spacing
+        # Save results - prep for DataFrame
+        res_dict = dict()
+        res_dict['method'] = system_label
+        res_dict['ser'] = ser
+        res_dicts.append(res_dict)
         
 
     # Plot SER as a function of channel spacing
     fig, ax = plt.subplots()
-    for meth, sercurve in res_dict.items():
-        ax.plot(wdm_channel_spacings / 1e9, sercurve, label=meth, marker='o')
+    sns.barplot(data=pd.DataFrame(res_dicts), x='method', y='ser', ax=ax)
     ax.set_yscale('log')
     ax.set_xlabel('Channel spacing [GHz]')
     ax.set_ylabel('SER')
     ax.grid()
-    ax.legend()
     fig.tight_layout()
 
     # Plot example of WDM signal
@@ -196,13 +189,12 @@ if __name__ == "__main__":
     symbols_up = torch.zeros((len(a) * samples_per_symbol, ), dtype=torch.float64)
     symbols_up[::samples_per_symbol] = torch.from_numpy(a)
     with torch.no_grad():
-        tx_wdm = joint_tx_rx.eval_tx(symbols_up, n_channels=wdm_n_channels, batch_size=int(1e5),
-                                     channel_spacing_hz=wdm_channel_spacings[len(wdm_channel_spacings) // 2])
+        tx_wdm = joint_tx_rx.eval_tx(symbols_up, channel_spacing_hz=wdm_channel_spacing, batch_size=int(1e5))
         tx_chan = joint_tx_rx.channel_selection_filter.forward(tx_wdm)
     ax.psd(tx_wdm, Fs=1 / joint_tx_rx.Ts, label='Tx WDM', sides='twosided')
     ax.psd(tx_chan, Fs=1 / joint_tx_rx.Ts, label='Tx Chan select', sides='twosided')
 
-    ax.set_title(f"Example: Channel spacing {wdm_channel_spacings[len(wdm_channel_spacings) // 2] / 1e9} GHz")
+    ax.set_title(f"Example: Channel spacing {wdm_channel_spacing / 1e9} GHz")
     fig.tight_layout()
 
     # Plot the learned filters

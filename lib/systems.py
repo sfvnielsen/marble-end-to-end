@@ -1319,11 +1319,10 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  learn_rx, learn_tx, rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_voltage_pp, dac_voltage_bias, dac_learnable_norm: bool, dac_learnable_bias: bool,
-                 modulator_type='eam', equaliser_config: dict | None = None,
+                 dac_config: dict, adc_bwl_cutoff_hz: float | None, modulator_type='eam',
+                 equaliser_config: dict | None = None,
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
-                 dac_bitres=None, adc_bitres=None, dac_minmax_norm: float | str = 'auto',
+                 rrc_rolloff=0.5, adc_bitres=None, dac_minmax_norm: float | str = 'auto',
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000),
                  multi_channel: bool=False) -> None:
         super().__init__(sps=sps, esn0_db=np.nan, baud_rate=baud_rate, learning_rate=learning_rate,
@@ -1370,9 +1369,6 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
             self.equaliser = LinearFeedForwardEqualiser(samples_per_symbol=self.sps, dtype=torch.float64,  # FIXME: !
                                                         **equaliser_config)
 
-        # Define bandwidth limitation filters - low pass filter with cutoff relative to bw of baseband
-        info_bw = 0.5 * baud_rate
-
         # Estimate the min-max value of an RRC filter empirically and apply that as normalization in the DAC
         dac_normalizer = dac_minmax_norm
         if isinstance(dac_minmax_norm, float) or isinstance(dac_minmax_norm, int):
@@ -1393,17 +1389,15 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
             raise Exception(f"Unknown DAC normalization scheme: '{dac_minmax_norm}'")
 
         # Digital-to-analog (DAC) converter
-        self.optimizable_dac = dac_learnable_bias or dac_learnable_norm
-        self.dac = DigitalToAnalogConverter(bias_voltage=dac_voltage_bias, peak_to_peak_voltage=dac_voltage_pp,
-                                            peak_to_peak_constellation=dac_normalizer,
-                                            bwl_cutoff=None if dac_bwl_relative_cutoff is None else info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts,
-                                            bessel_order=5, bit_resolution=dac_bitres,
-                                            learnable_bias=dac_learnable_bias,
-                                            learnable_normalization=dac_learnable_norm,
-                                            multi_channel=multi_channel)
+        self.optimizable_dac = dac_config.get('learnable_bias') or dac_config.get('learnable_normalization')
+        self.dac = DigitalToAnalogConverter(peak_to_peak_constellation=dac_normalizer,
+                                            multi_channel=multi_channel,
+                                            bessel_order=5,
+                                            fs=1/self.Ts,
+                                            **dac_config)
 
         # Analog-to-digial (ADC) converter
-        self.adc = AnalogToDigitalConverter(bwl_cutoff=None if adc_bwl_relative_cutoff is None else info_bw * adc_bwl_relative_cutoff, fs=1/self.Ts,
+        self.adc = AnalogToDigitalConverter(bwl_cutoff=adc_bwl_cutoff_hz, fs=1/self.Ts,
                                             bessel_order=5, bit_resolution=adc_bitres)
 
         # Define modulator
@@ -1422,7 +1416,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         self.channel = SingleModeFiber(Fs=1/self.Ts, **smf_config)
 
         # Define photodiode
-        self.photodiode = Photodiode(bandwidth=info_bw * adc_bwl_relative_cutoff if adc_bwl_relative_cutoff is not None else info_bw,
+        self.photodiode = Photodiode(bandwidth=adc_bwl_cutoff_hz,
                                      Fs=1/self.Ts, sps=self.sps, **photodiode_config)
         self.Es = None  # initialize energy-per-symbol to None as it will be calculated on the fly during eval
 
@@ -1582,22 +1576,19 @@ class PulseShapingIM(IntensityModulationChannel):
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_voltage_pp, dac_voltage_bias, dac_learnable_norm: bool, dac_learnable_bias: bool,
-                 modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
-                 dac_bitres=None, dac_minmax_norm: float | str = 'auto', adc_bitres=None,
+                 dac_config: dict, adc_bwl_cutoff_hz, modulator_type='eam',
+                 rx_filter_init_type='rrc', tx_filter_init_type='rrc', rrc_rolloff=0.5,
+                 dac_minmax_norm: float | str = 'auto', adc_bitres=None,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
                          learn_rx=False, learn_tx=True, rx_filter_length=rx_filter_length,
                          tx_filter_length=tx_filter_length,
-                         dac_voltage_pp=dac_voltage_pp, dac_voltage_bias=dac_voltage_bias,
-                         dac_minmax_norm=dac_minmax_norm, dac_learnable_bias=dac_learnable_bias, dac_learnable_norm=dac_learnable_norm,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
-                         modulator_type=modulator_type,
+                         modulator_type=modulator_type, dac_config=dac_config,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
-                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
-                         dac_bitres=dac_bitres, adc_bitres=adc_bitres,
+                         adc_bwl_cutoff_hz=adc_bwl_cutoff_hz,
+                         adc_bitres=adc_bitres, dac_minmax_norm=dac_minmax_norm,
                          rrc_rolloff=rrc_rolloff, use_1clr=use_1clr, eval_batch_size_in_syms=eval_batch_size_in_syms,
                          print_interval=print_interval)
 
@@ -1609,22 +1600,19 @@ class RxFilteringIM(IntensityModulationChannel):
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_voltage_pp, dac_voltage_bias, dac_learnable_norm: bool, dac_learnable_bias: bool,
+                 dac_config: dict, adc_bwl_cutoff_hz,
                  dac_minmax_norm: float | str = 'auto',
                  modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
-                 dac_bitres=None, adc_bitres=None,
+                 rrc_rolloff=0.5, adc_bitres=None,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
                          rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
-                         dac_voltage_pp=dac_voltage_pp, dac_voltage_bias=dac_voltage_bias,
-                         dac_minmax_norm=dac_minmax_norm, dac_learnable_bias=dac_learnable_bias, dac_learnable_norm=dac_learnable_norm,
+                         dac_minmax_norm=dac_minmax_norm, dac_config=dac_config,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                          modulator_type=modulator_type, learn_rx=True, learn_tx=False,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
-                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
-                         dac_bitres=dac_bitres, adc_bitres=adc_bitres,
+                         adc_bwl_cutoff_hz=adc_bwl_cutoff_hz, adc_bitres=adc_bitres,
                          rrc_rolloff=rrc_rolloff, use_1clr=use_1clr, eval_batch_size_in_syms=eval_batch_size_in_syms,
                          print_interval=print_interval)
 
@@ -1635,23 +1623,20 @@ class JointTxRxIM(IntensityModulationChannel):
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_voltage_pp, dac_voltage_bias, dac_learnable_norm: bool, dac_learnable_bias: bool,
+                 dac_config: dict, adc_bwl_cutoff_hz: float,
                  dac_minmax_norm: float | str = 'auto',
-                 modulator_type=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
-                 dac_bitres=None, adc_bitres=None,
+                 modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 rrc_rolloff=0.5, adc_bitres=None,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
-                         modulator_type=modulator_type,
-                         dac_voltage_pp=dac_voltage_pp, dac_voltage_bias=dac_voltage_bias,
-                         dac_minmax_norm=dac_minmax_norm, dac_learnable_bias=dac_learnable_bias, dac_learnable_norm=dac_learnable_norm,
+                         modulator_type=modulator_type, dac_config=dac_config,
+                         dac_minmax_norm=dac_minmax_norm, adc_bwl_cutoff_hz=adc_bwl_cutoff_hz,
                          learn_rx=True, learn_tx=True, rx_filter_length=rx_filter_length,
                          tx_filter_length=tx_filter_length,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
-                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
-                         dac_bitres=dac_bitres, adc_bitres=adc_bitres,
+                         adc_bitres=adc_bitres,
                          rrc_rolloff=rrc_rolloff, use_1clr=use_1clr, eval_batch_size_in_syms=eval_batch_size_in_syms,
                          print_interval=print_interval)
 
@@ -1663,23 +1648,19 @@ class LinearFFEIM(IntensityModulationChannel):
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length, ffe_n_taps,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_voltage_pp, dac_voltage_bias, dac_learnable_norm: bool, dac_learnable_bias: bool,
-                 dac_minmax_norm: float | str = 'auto',
-                 modulator_type=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
-                 dac_bitres=None, adc_bitres=None,
+                 dac_config: dict, adc_bwl_cutoff_hz, dac_minmax_norm: float | str = 'auto',
+                 modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 rrc_rolloff=0.5,adc_bitres=None,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
-                         dac_voltage_pp=dac_voltage_pp, dac_voltage_bias=dac_voltage_bias,
-                         dac_minmax_norm=dac_minmax_norm, dac_learnable_bias=dac_learnable_bias, dac_learnable_norm=dac_learnable_norm,
+                         dac_config=dac_config, dac_minmax_norm=dac_minmax_norm,
                          modulator_type=modulator_type, equaliser_config={'n_taps': ffe_n_taps},
                          learn_rx=False, learn_tx=False, rx_filter_length=rx_filter_length,
                          tx_filter_length=tx_filter_length,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
-                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
-                         dac_bitres=dac_bitres, adc_bitres=adc_bitres,
+                         adc_bwl_cutoff_hz=adc_bwl_cutoff_hz, adc_bitres=adc_bitres,
                          rrc_rolloff=rrc_rolloff, use_1clr=use_1clr, eval_batch_size_in_syms=eval_batch_size_in_syms,
                          print_interval=print_interval)
 
@@ -1715,24 +1696,20 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  learn_rx, learn_tx, rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_voltage_pp, dac_voltage_bias, wdm_channel_spacing_hz,
-                 dac_learnable_norm: bool, dac_learnable_bias: bool,
+                 dac_config: dict, wdm_channel_spacing_hz, adc_bwl_cutoff_hz,
                  wdm_channel_selection_rel_cutoff, dac_minmax_norm: float | str = 'auto',
                  modulator_type='eam', equaliser_config: dict | None = None,
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 dac_bwl_relative_cutoff=0.75, adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
-                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000),
-                 torch_seed=0) -> None:
+                 rrc_rolloff=0.5, use_1clr=False, eval_batch_size_in_syms=1000,
+                 print_interval=int(50000), torch_seed=0) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
                          learn_rx=learn_rx, learn_tx=learn_tx, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
-                         dac_voltage_pp=dac_voltage_pp, dac_voltage_bias=dac_voltage_bias,
-                         dac_minmax_norm=dac_minmax_norm, dac_learnable_bias=dac_learnable_bias, dac_learnable_norm=dac_learnable_norm,
+                         dac_config=dac_config, dac_minmax_norm=dac_minmax_norm,
                          modulator_type=modulator_type, equaliser_config=equaliser_config,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
-                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
-                         rrc_rolloff=rrc_rolloff, dac_bitres=None, adc_bitres=None,
+                         adc_bwl_cutoff_hz=adc_bwl_cutoff_hz, rrc_rolloff=rrc_rolloff, adc_bitres=None,
                          eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
                          multi_channel=True)
 
@@ -1793,7 +1770,7 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
 
         return rx_eq_out
 
-    def eval_tx(self, symbols_up: torch.TensorType, n_channels: int, channel_spacing_hz: float,
+    def eval_tx(self, symbols_up: torch.TensorType, channel_spacing_hz: float,
                 batch_size: int, dac_bitres: int | None = None, torch_seed: int = 0):
         # Set DAC bit resolution
         self.dac.set_bitres(dac_bitres)
@@ -1859,12 +1836,10 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
         # Fetch config
         decimate = eval_config.get('decimate', True)
         channel_spacing_hz = eval_config.get('channel_spacing_hz', self.wdm_channel_spacing_hz)
-        n_channels = eval_config.get('n_channels', self.wdm_n_channels)
         torch_seed = eval_config.get('seed', self.torch_seed)
-        assert (n_channels + 1) % 2 == 0
 
         # Apply Tx (including generating interferer symbols and WDM signal)
-        tx_wdm = self.eval_tx(symbols_up, n_channels, channel_spacing_hz, batch_size,
+        tx_wdm = self.eval_tx(symbols_up, channel_spacing_hz, batch_size,
                               dac_bitres=eval_config.get('dac_bitres', None), torch_seed=torch_seed)
 
         # Apply SMF
@@ -1890,25 +1865,22 @@ class PulseShapingIMwithWDM(IntensityModulationChannelwithWDM):
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_voltage_pp, dac_voltage_bias, wdm_channel_spacing_hz,
-                 wdm_channel_selection_rel_cutoff, dac_learnable_norm: bool, dac_learnable_bias: bool,
-                 modulator_type=False, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 dac_bwl_relative_cutoff=0.75, dac_minmax_norm: float | str = 'auto',
-                 adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
+                 dac_config: dict, wdm_channel_spacing_hz, wdm_channel_selection_rel_cutoff,
+                 adc_bwl_cutoff_hz, modulator_type='eam',
+                 rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 dac_minmax_norm: float | str = 'auto', rrc_rolloff=0.5,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000),
                  torch_seed=0) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
                          learn_rx=False, learn_tx=True, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
-                         dac_voltage_pp=dac_voltage_pp, dac_voltage_bias=dac_voltage_bias,
-                         dac_learnable_bias=dac_learnable_bias, dac_learnable_norm=dac_learnable_norm,
+                         dac_config=dac_config, dac_minmax_norm=dac_minmax_norm,
                          wdm_channel_spacing_hz=wdm_channel_spacing_hz,
                          wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                          modulator_type=modulator_type, equaliser_config=None,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
-                         dac_minmax_norm=dac_minmax_norm,
-                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         adc_bwl_cutoff_hz=adc_bwl_cutoff_hz,
                          rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
                          torch_seed=torch_seed)
 
@@ -1923,25 +1895,22 @@ class RxFilteringIMwithWDM(IntensityModulationChannelwithWDM):
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_voltage_pp, dac_voltage_bias, wdm_channel_spacing_hz,
-                 wdm_channel_selection_rel_cutoff, dac_learnable_norm: bool, dac_learnable_bias: bool,
+                 dac_config: dict, wdm_channel_spacing_hz, adc_bwl_cutoff_hz, 
+                 wdm_channel_selection_rel_cutoff,
                  modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 dac_bwl_relative_cutoff=0.75, dac_minmax_norm: float | str = 'auto',
-                 adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
+                 dac_minmax_norm: float | str = 'auto', rrc_rolloff=0.5,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000),
                  torch_seed=0) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
                          learn_rx=True, learn_tx=False, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
-                         dac_voltage_pp=dac_voltage_pp, dac_voltage_bias=dac_voltage_bias,
-                         dac_learnable_bias=dac_learnable_bias, dac_learnable_norm=dac_learnable_norm,
+                         dac_config=dac_config, dac_minmax_norm=dac_minmax_norm,
                          wdm_channel_spacing_hz=wdm_channel_spacing_hz,
                          wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                          modulator_type=modulator_type, equaliser_config=None,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
-                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, dac_minmax_norm=dac_minmax_norm,
-                         adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         adc_bwl_cutoff_hz=adc_bwl_cutoff_hz,
                          rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
                          torch_seed=torch_seed)
 
@@ -1956,25 +1925,21 @@ class JointTxRxIMwithWDM(IntensityModulationChannelwithWDM):
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_voltage_pp, dac_voltage_bias, wdm_channel_spacing_hz,
-                 wdm_channel_selection_rel_cutoff, dac_learnable_norm: bool, dac_learnable_bias: bool,
-                 modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 dac_bwl_relative_cutoff=0.75, dac_minmax_norm: float | str = 'auto',
-                 adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
+                 dac_config: dict, wdm_channel_spacing_hz, wdm_channel_selection_rel_cutoff,
+                 adc_bwl_cutoff_hz, modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 dac_minmax_norm: float | str = 'auto', rrc_rolloff=0.5,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000),
                  torch_seed=0) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
                          learn_rx=True, learn_tx=True, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
-                         dac_voltage_pp=dac_voltage_pp, dac_voltage_bias=dac_voltage_bias,
-                         dac_learnable_bias=dac_learnable_bias, dac_learnable_norm=dac_learnable_norm,
+                         dac_config=dac_config, dac_minmax_norm=dac_minmax_norm,
                          wdm_channel_spacing_hz=wdm_channel_spacing_hz,
                          wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                          modulator_type=modulator_type, equaliser_config=None,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
-                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, dac_minmax_norm=dac_minmax_norm,
-                         adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         adc_bwl_cutoff_hz=adc_bwl_cutoff_hz,
                          rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
                          torch_seed=torch_seed)
 
@@ -1989,24 +1954,19 @@ class LinearFFEIMwithWDM(IntensityModulationChannelwithWDM):
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length, ffe_n_taps: int,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_voltage_pp, dac_voltage_bias, dac_learnable_norm: bool, dac_learnable_bias: bool,
-                 wdm_channel_spacing_hz, wdm_channel_selection_rel_cutoff,
+                 dac_config: dict, adc_bwl_cutoff_hz,  wdm_channel_spacing_hz, wdm_channel_selection_rel_cutoff,
                  modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 dac_bwl_relative_cutoff=0.75, dac_minmax_norm: float | str = 'auto',
-                 adc_bwl_relative_cutoff=0.75, rrc_rolloff=0.5,
+                 dac_minmax_norm: float | str = 'auto', rrc_rolloff=0.5,
                  use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000),
                  torch_seed=0) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
                          learn_rx=False, learn_tx=False, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
-                         dac_voltage_pp=dac_voltage_pp, dac_voltage_bias=dac_voltage_bias,
-                         dac_learnable_bias=dac_learnable_bias, dac_learnable_norm=dac_learnable_norm,
-                         wdm_channel_spacing_hz=wdm_channel_spacing_hz,
+                         dac_config=dac_config, wdm_channel_spacing_hz=wdm_channel_spacing_hz,
                          wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                          modulator_type=modulator_type, equaliser_config={'n_taps': ffe_n_taps},
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
-                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff, dac_minmax_norm=dac_minmax_norm,
-                         adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         dac_minmax_norm=dac_minmax_norm, adc_bwl_cutoff_hz=adc_bwl_cutoff_hz,
                          rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
                          torch_seed=torch_seed)
