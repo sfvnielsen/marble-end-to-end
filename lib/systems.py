@@ -1416,7 +1416,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         self.channel = SingleModeFiber(Fs=1/self.Ts, **smf_config)
 
         # Define photodiode
-        self.photodiode = Photodiode(bandwidth=adc_bwl_cutoff_hz,
+        self.photodiode = Photodiode(bandwidth=adc_bwl_cutoff_hz if adc_bwl_cutoff_hz is not None else baud_rate * 0.5,
                                      Fs=1/self.Ts, sps=self.sps, **photodiode_config)
         self.Es = None  # initialize energy-per-symbol to None as it will be calculated on the fly during eval
 
