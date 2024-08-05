@@ -838,7 +838,7 @@ class BasicAWGNwithBWLandWDM(BasicAWGNwithBWL):
 
         with torch.no_grad():
             noise_std = self.calculate_noise_std(x_lp[:, 1])  # just calculate the noise_std based on the channel of interest
-        y = tx_wdm + noise_std * torch.randn(x_lp.shape)
+        y = tx_wdm + noise_std * torch.randn(tx_wdm.shape)
 
         # Low-pass filter to select middle channel
         y_chan = torch.real(self.channel_selection_filter.forward(y))
@@ -877,7 +877,7 @@ class BasicAWGNwithBWLandWDM(BasicAWGNwithBWL):
 
         with torch.no_grad():
             noise_std = self.calculate_noise_std(x_lp[:, 1])  # just calculate the noise_std based on the channel of interest
-        y = tx_wdm + noise_std * torch.randn(x_lp.shape)
+        y = tx_wdm + noise_std * torch.randn(tx_wdm.shape)
 
         # Low-pass filter to select middle channel
         y_chan = torch.real(self.channel_selection_filter.forward_numpy(y))
