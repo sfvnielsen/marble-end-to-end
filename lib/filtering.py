@@ -134,7 +134,7 @@ class MultiChannelFIRfilter(FIRfilter):
 
     def forward_numpy(self, x: torch.TensorType):
         xnp = x.numpy()
-        y = np.empty((len(xnp) // self.stride, x.shape[0]))
+        y = np.empty((len(xnp) // self.stride, x.shape[1],))
         for i in range(x.shape[1]):
             y[:, i] = np.convolve(np.pad(xnp[:, i], self.padding, mode='constant', constant_values=0.0),
                                 self.conv_weights.numpy(), mode='valid')[::self.stride]
