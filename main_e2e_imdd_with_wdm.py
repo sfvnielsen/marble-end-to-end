@@ -40,12 +40,11 @@ if __name__ == "__main__":
     baud_rate = int(100e9)
     mod_order = 4  # PAM
     rrc_rolloff = 0.01
-    learn_tx, tx_filter_length = True, 65
-    learn_rx, rx_filter_length = True, 65
+    tx_filter_length = 15
+    rx_filter_length = 15
     eval_adc_bitres = 5
     eval_dac_bitres = 5
     use_1clr = True
-    wdm_channel_selection_rel_cutoff = 1.1
 
     # Configuration for DAC (and ADC)
     dac_config = {
@@ -86,6 +85,7 @@ if __name__ == "__main__":
 
     # WDM config
     wdm_channel_spacing = baud_rate * 1.5
+    wdm_channel_selection_rel_cutoff = 1.1
 
     if not os.path.exists(FIGURE_DIR):
         os.mkdir(FIGURE_DIR)
@@ -185,17 +185,18 @@ if __name__ == "__main__":
     fig.tight_layout()
 
     # Plot example of WDM signal
-    fig, ax = plt.subplots()
+    systems_under_test = [joint_tx_rx, ps_sys, rxf_sys, ffe_sys]
+    fig, ax = plt.subplots(ncols=len(systems_under_test), figsize=(12, 5))
     symbols_up = torch.zeros((len(a) * samples_per_symbol, ), dtype=torch.float64)
     symbols_up[::samples_per_symbol] = torch.from_numpy(a)
-    with torch.no_grad():
-        tx_wdm = joint_tx_rx.eval_tx(symbols_up, channel_spacing_hz=wdm_channel_spacing, batch_size=int(1e5))
-        tx_chan = joint_tx_rx.channel_selection_filter.forward(tx_wdm)
-    ax.psd(tx_wdm, Fs=1 / joint_tx_rx.Ts, label='Tx WDM', sides='twosided')
-    ax.psd(tx_chan, Fs=1 / joint_tx_rx.Ts, label='Tx Chan select', sides='twosided')
 
-    ax.set_title(f"Example: Channel spacing {wdm_channel_spacing / 1e9} GHz")
-    fig.tight_layout()
+    for s, sys in enumerate(systems_under_test):
+        with torch.no_grad():
+            tx_wdm = sys.eval_tx(symbols_up, channel_spacing_hz=wdm_channel_spacing, batch_size=int(1e5))
+            tx_chan = sys.channel_selection_filter.forward(tx_wdm)
+        ax[s].psd(tx_wdm, Fs=1 / sys.Ts, label='Tx WDM', sides='twosided')
+        ax[s].psd(tx_chan, Fs=1 / sys.Ts, label='Tx Chan select', sides='twosided')
+        ax[s].set_title(f"{sys}")
 
     # Plot the learned filters
     fig, ax = plt.subplots(nrows=2)

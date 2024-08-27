@@ -30,17 +30,17 @@ FIGPREFIX = 'e2e'
 
 if __name__ == "__main__":
     # Define simulation parameters
-    save_figures = True
+    save_figures = False
     n_symbols_train = int(15e5)
     n_symbols_val = int(5e5)  # number of symbols used for SER calculation
-    samples_per_symbol = 4
+    samples_per_symbol = 8
     baud_rate = int(100e9)
     train_snr_db = 12.0  # SNR (EsN0) at which the training is done
-    eval_snr_db = 6.0
+    eval_snr_db = 8.0
     mod_order = 4  # PAM
     rrc_rolloff = 0.01  # for initialization
-    learn_tx, tx_filter_length = True, 35
-    learn_rx, rx_filter_length = True, 35
+    learn_tx, tx_filter_length = False, 15
+    learn_rx, rx_filter_length = True, 15
     dac_bwl_relative_cutoff = 0.9  # low-pass filter cuttoff relative to bandwidth of the baseband signal
     adc_bwl_relative_cutoff = 0.9
     use_1clr = True  # learning rate scheduling of the optimizer
@@ -115,7 +115,7 @@ if __name__ == "__main__":
     rrc_pulse_length_in_syms = tx_filter_length // samples_per_symbol + 1
     awgn_ffe_system = LinearFFEAWGNwithBWL(sps=samples_per_symbol, esn0_db=train_snr_db, baud_rate=baud_rate,
                                            learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
-                                           ffe_n_taps=35, rrc_rolloff=rrc_rolloff,
+                                           ffe_n_taps=rx_filter_length, rrc_rolloff=rrc_rolloff,
                                            tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr, use_brickwall=use_brickwall,
                                            adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                            tx_filter_init_type='rrc', rx_filter_init_type='rrc')

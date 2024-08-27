@@ -7,3 +7,4 @@ pyarrow
 matplotlib
 pyqt5
 seaborn
+eyediagram @ git+https://github.com/sfvnielsen/eyediagram@master
