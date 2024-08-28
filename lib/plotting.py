@@ -63,27 +63,35 @@ def plot_fft(x: npt.ArrayLike, ax: plt.Axes, Ts: float,
 
 
 def plot_eyediagram(rx_out: npt.ArrayLike, ax: plt.Axes, Ts: float, sps: int, histogram: bool = False,
-                    decimation=10, n_symbol_periods=4, shift=0):
+                    decimation=10, n_symbol_periods=4, shift=0, ylims=None, yaxis_anchors=None):
     t = np.arange(shift * Ts, shift * Ts + n_symbol_periods * Ts * sps, Ts)
     discard_n_symbol_periods = 10
     if histogram:
         grid_res = (8, 16)
         eyediagram(np.roll(rx_out, shift), ax=ax, window_size=n_symbol_periods * sps, offset=shift, colorbar=False,
                    bins=(grid_res[0] * n_symbol_periods * sps, grid_res[1] * n_symbol_periods * sps),
-                   cmap='Reds')
+                   cmap='Reds', y_bounds=ylims)
         ax.set_xticks(np.arange(sps * grid_res[1], n_symbol_periods * sps * grid_res[1], sps * grid_res[1]))
         ax.set_xticklabels([f"{i} / Rs" for i  in np.arange(1, n_symbol_periods)])
+
+        if ylims:
+            yvals = np.linspace(*ylims, grid_res[0] * n_symbol_periods * sps)
+        else:
+            # Eyediagram is plotted by default in y-range (ymin - 0.05 * A, ymax + 0.05 * A)
+            yamp = rx_out.max() - rx_out.min()
+            yvals = np.linspace(rx_out.min() - 0.05 * yamp, rx_out.max() + 0.05 * yamp, grid_res[0] * n_symbol_periods * sps)
         
-        # Eyediagram is plotted by default in y-range (ymin - 0.05 * A, ymax + 0.05 * A)
-        yamp = rx_out.max() - rx_out.min()
-        yvals = np.linspace(rx_out.min() - 0.05 * yamp, rx_out.max() + 0.05 * yamp, grid_res[0] * n_symbol_periods * sps)
-        n_yvals = 4
-        # Find the indices of elements closest to integers within the tolerance
-        intindices = np.where(yvals - np.round(yvals) <= 0.01)[0]
-        new_yticks = intindices[len(intindices)//n_yvals::len(intindices)//n_yvals]
+        # Find the indices of elements closest to y-anchors within the tolerance
+        new_yticks = []
+        if yaxis_anchors:
+            for yaa in yaxis_anchors:
+                new_yticks.append(np.where(np.abs(yvals - yaa) <= 2 / grid_res[0])[0][0])
+        else:
+            n_yvals = 5
+            new_yticks = np.arange(0, len(yvals), len(yvals)//n_yvals)
         new_ytickvalues = np.take(np.flip(yvals), new_yticks)
         ax.set_yticks(new_yticks)
-        ax.set_yticklabels([f"{yv:.0f}" for yv in new_ytickvalues])
+        ax.set_yticklabels([f"{yv:.1f}" for yv in new_ytickvalues])
     else:
         ax.plot(t, np.reshape(np.roll(rx_out, shift), (-1, sps * n_symbol_periods))[discard_n_symbol_periods:-discard_n_symbol_periods:decimation].T,
                 color='crimson', alpha=.1, lw=.5)
