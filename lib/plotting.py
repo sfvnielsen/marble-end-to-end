@@ -70,7 +70,7 @@ def plot_eyediagram(rx_out: npt.ArrayLike, ax: plt.Axes, Ts: float, sps: int, hi
         grid_res = (8, 16)
         eyediagram(np.roll(rx_out, shift), ax=ax, window_size=n_symbol_periods * sps, offset=shift, colorbar=False,
                    bins=(grid_res[0] * n_symbol_periods * sps, grid_res[1] * n_symbol_periods * sps),
-                   cmap='Reds', y_bounds=ylims)
+                   cmap='inferno', y_bounds=ylims, black_bg=True)
         ax.set_xticks(np.arange(sps * grid_res[1], n_symbol_periods * sps * grid_res[1], sps * grid_res[1]))
         ax.set_xticklabels([f"{i} / Rs" for i  in np.arange(1, n_symbol_periods)])
 
@@ -91,7 +91,7 @@ def plot_eyediagram(rx_out: npt.ArrayLike, ax: plt.Axes, Ts: float, sps: int, hi
             new_yticks = np.arange(0, len(yvals), len(yvals)//n_yvals)
         new_ytickvalues = np.take(np.flip(yvals), new_yticks)
         ax.set_yticks(new_yticks)
-        ax.set_yticklabels([f"{yv:.1f}" for yv in new_ytickvalues])
+        ax.set_yticklabels([f"{yv:.0f}" for yv in new_ytickvalues])
     else:
         ax.plot(t, np.reshape(np.roll(rx_out, shift), (-1, sps * n_symbol_periods))[discard_n_symbol_periods:-discard_n_symbol_periods:decimation].T,
                 color='crimson', alpha=.1, lw=.5)
