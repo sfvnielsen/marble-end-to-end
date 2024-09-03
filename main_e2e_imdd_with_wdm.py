@@ -44,7 +44,7 @@ if __name__ == "__main__":
     rx_filter_length = 15
     eval_adc_bitres = 5
     eval_dac_bitres = 5
-    use_1clr = True
+    lr_schedule = 'expdecay'
 
     # Configuration for DAC (and ADC)
     dac_config = {
@@ -52,7 +52,9 @@ if __name__ == "__main__":
         'bias_voltage': 'negative_vpp',
         'bwl_cutoff': 45e9,  # Hz
         'learnable_normalization': True,
-        'learnable_bias': True
+        'learnable_bias': True,
+        'filter_type': 'bessel',
+        'lpf_order': 5
     }
 
     adc_bwl_cutoff_hz = 45e9  # same as dac
@@ -99,7 +101,7 @@ if __name__ == "__main__":
     random_obj = np.random.default_rng(seed=seed)
 
     # Optimization parameters
-    learning_rate = 1e-3
+    learning_rate = 1e-2
     batch_size = 1000
 
     # Initialize learnable transmission system(s)
@@ -108,7 +110,7 @@ if __name__ == "__main__":
                                      rrc_rolloff=rrc_rolloff,
                                      wdm_channel_spacing_hz=wdm_channel_spacing,
                                      wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
-                                     tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
+                                     tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, lr_schedule=lr_schedule,
                                      tx_filter_init_type='rrc', rx_filter_init_type='rrc',
                                      smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                                      modulator_type=modulator_type, dac_config=dac_config, adc_bwl_cutoff_hz=adc_bwl_cutoff_hz)
@@ -118,7 +120,7 @@ if __name__ == "__main__":
                                    rrc_rolloff=rrc_rolloff,
                                    wdm_channel_spacing_hz=wdm_channel_spacing,
                                    wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
-                                   tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
+                                   tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, lr_schedule=lr_schedule,
                                    tx_filter_init_type='rrc', rx_filter_init_type='rrc',
                                    smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                                    modulator_type=modulator_type, dac_config=dac_config, adc_bwl_cutoff_hz=adc_bwl_cutoff_hz)
@@ -128,7 +130,7 @@ if __name__ == "__main__":
                                    rrc_rolloff=rrc_rolloff,
                                    wdm_channel_spacing_hz=wdm_channel_spacing,
                                    wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
-                                   tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
+                                   tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, lr_schedule=lr_schedule,
                                    tx_filter_init_type='rrc', rx_filter_init_type='rrc',
                                    smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                                    modulator_type=modulator_type, dac_config=dac_config, adc_bwl_cutoff_hz=adc_bwl_cutoff_hz)
@@ -138,7 +140,7 @@ if __name__ == "__main__":
                                  rrc_rolloff=rrc_rolloff, ffe_n_taps=rx_filter_length,
                                  wdm_channel_spacing_hz=wdm_channel_spacing,
                                  wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
-                                 tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
+                                 tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, lr_schedule=lr_schedule,
                                  tx_filter_init_type='rrc', rx_filter_init_type='rrc',
                                  smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                                  modulator_type=modulator_type, dac_config=dac_config, adc_bwl_cutoff_hz=adc_bwl_cutoff_hz)

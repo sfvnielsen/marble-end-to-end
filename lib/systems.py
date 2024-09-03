@@ -12,7 +12,7 @@ from scipy.fft import fftshift
 from commpy.filters import rrcosfilter
 
 from .filtering import FIRfilter, BesselFilter, BrickWallFilter, AllPassFilter, GaussianFqFilter,\
-                       MultiChannelFIRfilter, MultiChannelBesselFilter, filter_initialization
+                       MultiChannelFIRfilter, MultiChannelBesselFilter, LowPassFIR, filter_initialization
 from .utility import find_max_variance_sample, symbol_sync, permute_symbols
 from .devices import ElectroAbsorptionModulator, MyNonLinearEAM, Photodiode,\
                      IdealLinearModulator, DigitalToAnalogConverter, AnalogToDigitalConverter,\
@@ -201,7 +201,8 @@ class LearnableTransmissionSystem(object):
         Parent class for end-to-end learning.
     """
     def __init__(self, sps, esn0_db, baud_rate, learning_rate, batch_size, constellation,
-                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(5e4)) -> None:
+                 lr_schedule='expdecay', eval_batch_size_in_syms=1000, print_interval=int(5e4),
+                 gradient_norm_clipping=False) -> None:
         self.esn0_db = esn0_db
         self.baud_rate = baud_rate
         self.learning_rate = learning_rate  # learning rate of optimizer
@@ -213,7 +214,8 @@ class LearnableTransmissionSystem(object):
         self.batch_print_interval = print_interval / self.batch_size
         self.optimizer = None
         self.constellation = constellation
-        self.use_1clr = use_1clr
+        self.lr_schedule = lr_schedule
+        self.use_gradient_norm_clipping = gradient_norm_clipping
 
     def print_system_info(self):
         # FIXME
@@ -262,10 +264,11 @@ class LearnableTransmissionSystem(object):
             raise Exception("Optimizer was not initialized. Please call the 'initialize_optimizer' method before proceeding to optimize.")
 
         # Gradient norm clipping
-        for pgroup in self.optimizer.param_groups:
-            # FIXME: Abusing param groups a bit here.
-            # So far each param group corresponds to exatcly one parameter.
-            torch.nn.utils.clip_grad_norm_(pgroup['params'], 1.0)  # clip all gradients to unit norm
+        if self.use_gradient_norm_clipping:
+            for pgroup in self.optimizer.param_groups:
+                # FIXME: Abusing param groups a bit here.
+                # So far each param group corresponds to exatcly one parameter.
+                torch.nn.utils.clip_grad_norm_(pgroup['params'], 1.0)  # clip all gradients to unit norm
 
         # Take gradient step.
         self.optimizer.step()
@@ -277,12 +280,23 @@ class LearnableTransmissionSystem(object):
         if return_loss:
             loss_per_batch = np.empty((len(symbols) // self.batch_size, ), dtype=np.float64)
 
-        # Create learning rate scheduler - OneCLR
-        if self.use_1clr:
-            lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(self.optimizer,
-                                                               max_lr=10 * self.learning_rate,
-                                                               steps_per_epoch=1,
-                                                               epochs=len(symbols) // self.batch_size)
+        # Create learning rate scheduler
+        if self.lr_schedule:
+            if self.lr_schedule == 'oneclr':
+                lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(self.optimizer,
+                                                                max_lr=10 * self.learning_rate,
+                                                                steps_per_epoch=1,
+                                                                epochs=len(symbols) // self.batch_size)
+            elif self.lr_schedule == 'expdecay':
+                lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optimizer,
+                                                                      gamma=0.99)
+            elif self.lr_schedule == 'multistep':
+                lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(self.optimizer,
+                                                                    milestones=[int(0.5*len(symbols) // self.batch_size),
+                                                                                int(0.9*len(symbols) // self.batch_size)],
+                                                                    gamma=0.1)
+            else:
+                raise ValueError(f"Unknown supplied learning rate scheduler: {self.lr_schedule}")
 
         for b in range(len(symbols) // self.batch_size):
             # Zero gradients
@@ -303,7 +317,7 @@ class LearnableTransmissionSystem(object):
             self.update_model(loss)
 
             this_lr = self.optimizer.param_groups[-1]['lr']
-            if self.use_1clr:
+            if self.lr_schedule:
                 lr_scheduler.step()
                 this_lr = lr_scheduler.get_last_lr()[0]
 
@@ -338,7 +352,7 @@ class BasicAWGN(LearnableTransmissionSystem):
     """
     def __init__(self, sps, esn0_db, baud_rate, learning_rate, batch_size, constellation, learn_tx: bool, learn_rx: bool, print_interval=int(5e4),
                  normalize_after_tx=True, tx_filter_length=45, rx_filter_length=45,
-                 tx_filter_init_type='dirac', rx_filter_init_type='dirac', rrc_rolloff=0.5, use_1clr=False) -> None:
+                 tx_filter_init_type='dirac', rx_filter_init_type='dirac', rrc_rolloff=0.5, lr_schedule='oneclr') -> None:
         super().__init__(sps=sps,
                          esn0_db=esn0_db,
                          baud_rate=baud_rate,
@@ -346,7 +360,7 @@ class BasicAWGN(LearnableTransmissionSystem):
                          batch_size=batch_size,
                          constellation=constellation,
                          print_interval=print_interval,
-                         use_1clr=use_1clr)
+                         lr_schedule=lr_schedule)
 
         # Define pulse shaper
         tx_filter_init = np.zeros((tx_filter_length,))
@@ -464,7 +478,7 @@ class PulseShapingAWGN(BasicAWGN):
     """
     def __init__(self, sps, esn0_db, baud_rate, constellation, batch_size, learning_rate, tx_filter_length,
                  rx_filter_length, print_interval=int(50000), rrc_rolloff=0.5,
-                 normalize_after_tx=True, filter_init_type='dirac', use_1clr=False) -> None:
+                 normalize_after_tx=True, filter_init_type='dirac', lr_schedule='oneclr') -> None:
         super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          learning_rate=learning_rate, batch_size=batch_size,
                          constellation=constellation,
@@ -476,7 +490,7 @@ class PulseShapingAWGN(BasicAWGN):
                          normalize_after_tx=normalize_after_tx,
                          tx_filter_init_type=filter_init_type,
                          rx_filter_init_type='rrc',
-                         use_1clr=use_1clr)
+                         lr_schedule=lr_schedule)
 
 
 class RxFilteringAWGN(BasicAWGN):
@@ -485,7 +499,7 @@ class RxFilteringAWGN(BasicAWGN):
     """
     def __init__(self, sps, esn0_db, baud_rate, constellation, batch_size, learning_rate, rx_filter_length,
                  tx_filter_length, print_interval=int(50000), rrc_rolloff=0.5,
-                 normalize_after_tx=True, filter_init_type='dirac', use_1clr=False) -> None:
+                 normalize_after_tx=True, filter_init_type='dirac', lr_schedule='oneclr') -> None:
         super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          learning_rate=learning_rate, batch_size=batch_size,
                          constellation=constellation,
@@ -497,7 +511,7 @@ class RxFilteringAWGN(BasicAWGN):
                          normalize_after_tx=normalize_after_tx,
                          rx_filter_init_type=filter_init_type,
                          tx_filter_init_type='rrc',
-                         use_1clr=use_1clr)
+                         lr_schedule=lr_schedule)
 
 
 class BasicAWGNwithBWL(LearnableTransmissionSystem):
@@ -509,7 +523,7 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
                  tx_filter_length: int, rx_filter_length: int, adc_bwl_relative_cutoff,
                  dac_bwl_relative_cutoff, learn_tx: bool, learn_rx: bool, equaliser_config: dict | None = None,
                  tx_filter_init_type='dirac', rx_filter_init_type='dirac',
-                 print_interval=int(5e4), use_brickwall=False, use_1clr=False,
+                 print_interval=int(5e4), lp_filter_type='bessel', lr_schedule='oneclr',
                  rrc_rolloff=0.5, tx_multi_channel: bool = False) -> None:
         super().__init__(sps=sps,
                          esn0_db=esn0_db,
@@ -518,7 +532,7 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
                          batch_size=batch_size,
                          constellation=constellation,
                          print_interval=print_interval,
-                         use_1clr=use_1clr)
+                         lr_schedule=lr_schedule)
 
         # Define pulse shaper
         tx_filter_init = np.zeros((tx_filter_length,))
@@ -566,22 +580,29 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         # Digital-to-analog (DAC) converter
         self.dac = AllPassFilter()
         if dac_bwl_relative_cutoff is not None:
-            if use_brickwall:
-                self.dac = BrickWallFilter(filter_length=512, cutoff_hz=info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
-            else:
+            if lp_filter_type == 'fir':
+                if tx_multi_channel:
+                    raise NotImplementedError()
+                else:
+                    self.dac = LowPassFIR(num_taps=5, cutoff_hz=info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
+            elif lp_filter_type == 'bessel':
                 if tx_multi_channel:
                     self.dac = MultiChannelBesselFilter(bessel_order=5, cutoff_hz=info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
                 else:
                     self.dac = BesselFilter(bessel_order=5, cutoff_hz=info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
+            else:
+                raise ValueError(f"Unknown low-pass filter type: {lp_filter_type}")
 
         # Analog-to-digial (ADC) converter
         self.adc = AllPassFilter()
 
         if adc_bwl_relative_cutoff is not None:
-            if use_brickwall:
-                self.adc = BrickWallFilter(filter_length=512, cutoff_hz=info_bw * adc_bwl_relative_cutoff, fs=1/self.Ts)
-            else:
+            if lp_filter_type == 'fir':
+                self.adc = LowPassFIR(num_taps=5, cutoff_hz=info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
+            elif lp_filter_type == 'bessel':
                 self.adc = BesselFilter(bessel_order=5, cutoff_hz=info_bw * adc_bwl_relative_cutoff, fs=1/self.Ts)
+            else:
+                raise ValueError(f"Unknown low-pass filter type: {lp_filter_type}")
 
         self.normalization_constant = np.sqrt(np.average(np.square(self.constellation)) / self.sps)
 
@@ -694,7 +715,8 @@ class PulseShapingAWGNwithBWL(BasicAWGNwithBWL):
     def __init__(self, sps, esn0_db, baud_rate, constellation, batch_size, learning_rate,
                  tx_filter_length, rx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
                  filter_init_type='dirac', print_interval=int(5e4), rrc_rolloff=0.5,
-                 use_brickwall=False, use_1clr=False) -> None:
+                 lp_filter_type='bessel',
+                 lr_schedule='oneclr') -> None:
         super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
@@ -707,8 +729,8 @@ class PulseShapingAWGNwithBWL(BasicAWGNwithBWL):
                          rx_filter_init_type='rrc',
                          print_interval=print_interval,
                          rrc_rolloff=rrc_rolloff,
-                         use_brickwall=use_brickwall,
-                         use_1clr=use_1clr)
+                         lp_filter_type=lp_filter_type,
+                         lr_schedule=lr_schedule)
 
 
 class RxFilteringAWGNwithBWL(BasicAWGNwithBWL):
@@ -718,7 +740,7 @@ class RxFilteringAWGNwithBWL(BasicAWGNwithBWL):
     def __init__(self, sps, esn0_db, baud_rate, constellation, batch_size, learning_rate,
                  rx_filter_length, tx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
                  filter_init_type='dirac', print_interval=int(5e4), rrc_rolloff=0.5,
-                 use_brickwall=False, use_1clr=False) -> None:
+                 lp_filter_type='bessel', lr_schedule='oneclr') -> None:
         super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
@@ -732,8 +754,8 @@ class RxFilteringAWGNwithBWL(BasicAWGNwithBWL):
                          tx_filter_init_type='rrc',
                          print_interval=print_interval,
                          rrc_rolloff=rrc_rolloff,
-                         use_brickwall=use_brickwall,
-                         use_1clr=use_1clr)
+                         lp_filter_type=lp_filter_type,
+                         lr_schedule=lr_schedule)
 
 
 class JointTxRxAWGNwithBWL(BasicAWGNwithBWL):
@@ -744,7 +766,7 @@ class JointTxRxAWGNwithBWL(BasicAWGNwithBWL):
                  rx_filter_length, tx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  print_interval=int(5e4), rrc_rolloff=0.5,
-                 use_brickwall=False, use_1clr=False) -> None:
+                 lp_filter_type='bessel', lr_schedule='oneclr') -> None:
         super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
@@ -758,8 +780,8 @@ class JointTxRxAWGNwithBWL(BasicAWGNwithBWL):
                          rx_filter_init_type=rx_filter_init_type,
                          print_interval=print_interval,
                          rrc_rolloff=rrc_rolloff,
-                         use_brickwall=use_brickwall,
-                         use_1clr=use_1clr)
+                         lp_filter_type=lp_filter_type,
+                         lr_schedule=lr_schedule)
 
 
 class LinearFFEAWGNwithBWL(BasicAWGNwithBWL):
@@ -770,8 +792,8 @@ class LinearFFEAWGNwithBWL(BasicAWGNwithBWL):
     def __init__(self, sps, esn0_db, baud_rate, constellation, batch_size, learning_rate,
                  rx_filter_length, tx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
                  ffe_n_taps, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 print_interval=int(5e4), rrc_rolloff=0.5,
-                 use_brickwall=False, use_1clr=False) -> None:
+                 print_interval=int(5e4), rrc_rolloff=0.5, lp_filter_type='bessel',
+                 lr_schedule='oneclr') -> None:
         super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
@@ -786,8 +808,8 @@ class LinearFFEAWGNwithBWL(BasicAWGNwithBWL):
                          rx_filter_init_type=rx_filter_init_type,
                          print_interval=print_interval,
                          rrc_rolloff=rrc_rolloff,
-                         use_brickwall=use_brickwall,
-                         use_1clr=use_1clr)
+                         lp_filter_type=lp_filter_type,
+                         lr_schedule=lr_schedule)
 
     def get_equaliser_filter(self):
         return self.equaliser.filter.get_filter()
@@ -803,12 +825,13 @@ class BasicAWGNwithBWLandWDM(BasicAWGNwithBWL):
                  wdm_channel_spacing_hz, wdm_channel_selection_rel_cutoff,
                  equaliser_config: dict | None = None, tx_filter_init_type='dirac',
                  rx_filter_init_type='dirac', print_interval=int(50000), torch_seed=0,
-                 use_brickwall=False, use_1clr=False, rrc_rolloff=0.5) -> None:
+                 lp_filter_type='bessel', lr_schedule='oneclr', rrc_rolloff=0.5) -> None:
         super().__init__(sps, esn0_db, baud_rate, learning_rate, batch_size, constellation,
                          tx_filter_length, rx_filter_length, adc_bwl_relative_cutoff,
                          dac_bwl_relative_cutoff, learn_tx, learn_rx, equaliser_config,
                          tx_filter_init_type, rx_filter_init_type, print_interval,
-                         use_brickwall, use_1clr, rrc_rolloff, tx_multi_channel=True)
+                         lp_filter_type, lr_schedule, rrc_rolloff, tx_multi_channel=True)
+
         self.wdm_n_channels = 3  # always three channels during training
         self.wdm_channel_spacing_hz = wdm_channel_spacing_hz
         self.torch_seed = torch_seed  # used for generating interferer channels
@@ -908,7 +931,7 @@ class PulseShapingAWGNwithBWLandWDM(BasicAWGNwithBWLandWDM):
                  tx_filter_length, rx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
                  wdm_channel_spacing_hz, wdm_channel_selection_rel_cutoff,
                  filter_init_type='dirac', print_interval=int(5e4), rrc_rolloff=0.5,
-                 use_brickwall=False, use_1clr=False) -> None:
+                 lp_filter_type='bessel', lr_schedule='oneclr') -> None:
         super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
@@ -923,8 +946,8 @@ class PulseShapingAWGNwithBWLandWDM(BasicAWGNwithBWLandWDM):
                          wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                          print_interval=print_interval,
                          rrc_rolloff=rrc_rolloff,
-                         use_brickwall=use_brickwall,
-                         use_1clr=use_1clr)
+                         lp_filter_type=lp_filter_type,
+                         lr_schedule=lr_schedule)
 
 
 class RxFilteringAWGNwithBWLandWDM(BasicAWGNwithBWLandWDM):
@@ -935,7 +958,7 @@ class RxFilteringAWGNwithBWLandWDM(BasicAWGNwithBWLandWDM):
                  rx_filter_length, tx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
                  wdm_channel_spacing_hz, wdm_channel_selection_rel_cutoff,
                  filter_init_type='dirac', print_interval=int(5e4), rrc_rolloff=0.5,
-                 use_brickwall=False, use_1clr=False) -> None:
+                 lp_filter_type='bessel', lr_schedule='oneclr') -> None:
         super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
@@ -951,8 +974,8 @@ class RxFilteringAWGNwithBWLandWDM(BasicAWGNwithBWLandWDM):
                          wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                          print_interval=print_interval,
                          rrc_rolloff=rrc_rolloff,
-                         use_brickwall=use_brickwall,
-                         use_1clr=use_1clr)
+                         lp_filter_type=lp_filter_type,
+                         lr_schedule=lr_schedule)
 
 
 class JointTxRxAWGNwithBWLandWDM(BasicAWGNwithBWLandWDM):
@@ -964,7 +987,7 @@ class JointTxRxAWGNwithBWLandWDM(BasicAWGNwithBWLandWDM):
                  wdm_channel_spacing_hz, wdm_channel_selection_rel_cutoff,
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  print_interval=int(5e4), rrc_rolloff=0.5,
-                 use_brickwall=False, use_1clr=False) -> None:
+                 lp_filter_type='bessel', lr_schedule='oneclr') -> None:
         super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
@@ -980,8 +1003,8 @@ class JointTxRxAWGNwithBWLandWDM(BasicAWGNwithBWLandWDM):
                          wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                          print_interval=print_interval,
                          rrc_rolloff=rrc_rolloff,
-                         use_brickwall=use_brickwall,
-                         use_1clr=use_1clr)
+                         lp_filter_type=lp_filter_type,
+                         lr_schedule=lr_schedule)
 
 
 class LinearFFEAWGNwithBWLandWDM(BasicAWGNwithBWLandWDM):
@@ -994,7 +1017,7 @@ class LinearFFEAWGNwithBWLandWDM(BasicAWGNwithBWLandWDM):
                  wdm_channel_spacing_hz, wdm_channel_selection_rel_cutoff,
                  ffe_n_taps, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  print_interval=int(5e4), rrc_rolloff=0.5,
-                 use_brickwall=False, use_1clr=False) -> None:
+                 lp_filter_type='bessel', lr_schedule='oneclr') -> None:
         super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
@@ -1011,8 +1034,8 @@ class LinearFFEAWGNwithBWLandWDM(BasicAWGNwithBWLandWDM):
                          wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                          print_interval=print_interval,
                          rrc_rolloff=rrc_rolloff,
-                         use_brickwall=use_brickwall,
-                         use_1clr=use_1clr)
+                         lp_filter_type=lp_filter_type,
+                         lr_schedule=lr_schedule)
 
     def get_equaliser_filter(self):
         return self.equaliser.filter.get_filter()
@@ -1032,7 +1055,7 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
                  dac_bwl_relative_cutoff, learn_tx: bool, learn_rx: bool, tx_filter_length: int, rx_filter_length: int,
                  non_linear_coefficients=(0.95, 0.04, 0.01), isi_filter1=np.array([0.2, -0.1, 0.9, 0.3]),
                  isi_filter2=np.array([0.2, 0.9, 0.3]), tx_filter_init_type='rrc', rx_filter_init_type='rrc',
-                 print_interval=int(5e4), use_brickwall=False, use_1clr=False,
+                 print_interval=int(5e4), use_brickwall=False, lr_schedule='oneclr',
                  rrc_rolloff=0.5) -> None:
         super().__init__(sps=sps,
                          esn0_db=esn0_db,
@@ -1041,7 +1064,7 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
                          batch_size=batch_size,
                          constellation=constellation,
                          print_interval=print_interval,
-                         use_1clr=use_1clr)
+                         lr_schedule=lr_schedule)
 
         # Define pulse shaper
         tx_filter_init = np.zeros((tx_filter_length,))
@@ -1230,7 +1253,7 @@ class PulseShapingNonLinearISIChannel(NonLinearISIChannel):
                  non_linear_coefficients=(0.95, 0.04, 0.01),
                  isi_filter1=np.array([0.2, -0.1, 0.9, 0.3]), isi_filter2=np.array([0.2, 0.9, 0.3]),
                  filter_init_type='rrc', print_interval=int(50000), use_brickwall=False,
-                 use_1clr=False, rrc_rolloff=0.5) -> None:
+                 lr_schedule='oneclr', rrc_rolloff=0.5) -> None:
         super().__init__(sps=sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          learning_rate=learning_rate, batch_size=batch_size,
                          constellation=constellation,
@@ -1241,7 +1264,7 @@ class PulseShapingNonLinearISIChannel(NonLinearISIChannel):
                          isi_filter1=isi_filter1, isi_filter2=isi_filter2,
                          tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length,
                          tx_filter_init_type=filter_init_type, rx_filter_init_type='rrc',
-                         print_interval=print_interval, use_brickwall=use_brickwall, use_1clr=use_1clr,
+                         print_interval=print_interval, use_brickwall=use_brickwall, lr_schedule=lr_schedule,
                          rrc_rolloff=rrc_rolloff)
 
 
@@ -1254,7 +1277,7 @@ class RxFilteringNonLinearISIChannel(NonLinearISIChannel):
                  rx_filter_length, tx_filter_length, non_linear_coefficients=(0.95, 0.04, 0.01),
                  isi_filter1=np.array([0.2, -0.1, 0.9, 0.3]), isi_filter2=np.array([0.2, 0.9, 0.3]),
                  filter_init_type='rrc', print_interval=int(50000),
-                 use_brickwall=False, use_1clr=False, rrc_rolloff=0.5) -> None:
+                 use_brickwall=False, lr_schedule='oneclr', rrc_rolloff=0.5) -> None:
         super().__init__(sps=sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          learning_rate=learning_rate, batch_size=batch_size,
                          constellation=constellation,
@@ -1265,7 +1288,7 @@ class RxFilteringNonLinearISIChannel(NonLinearISIChannel):
                          isi_filter1=isi_filter1, isi_filter2=isi_filter2,
                          tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length,
                          tx_filter_init_type='rrc', rx_filter_init_type=filter_init_type,
-                         print_interval=print_interval, use_brickwall=use_brickwall, use_1clr=use_1clr,
+                         print_interval=print_interval, use_brickwall=use_brickwall, lr_schedule=lr_schedule,
                          rrc_rolloff=rrc_rolloff)
 
 
@@ -1280,7 +1303,7 @@ class JointTxRxNonLinearISIChannel(NonLinearISIChannel):
                  isi_filter1=np.array([0.2, -0.1, 0.9, 0.3]), isi_filter2=np.array([0.2, 0.9, 0.3]),
                  tx_filter_init_type='rrc',
                  rx_filter_init_type='rrc', print_interval=int(50000), use_brickwall=False,
-                 use_1clr=False, rrc_rolloff=0.5) -> None:
+                 lr_schedule='oneclr', rrc_rolloff=0.5) -> None:
         super().__init__(sps=sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          learning_rate=learning_rate, batch_size=batch_size,
                          constellation=constellation,
@@ -1291,7 +1314,7 @@ class JointTxRxNonLinearISIChannel(NonLinearISIChannel):
                          isi_filter1=isi_filter1, isi_filter2=isi_filter2,
                          tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length,
                          tx_filter_init_type=tx_filter_init_type, rx_filter_init_type=rx_filter_init_type,
-                         print_interval=print_interval, use_brickwall=use_brickwall, use_1clr=use_1clr,
+                         print_interval=print_interval, use_brickwall=use_brickwall, lr_schedule=lr_schedule,
                          rrc_rolloff=rrc_rolloff)
 
 
@@ -1323,11 +1346,12 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
                  equaliser_config: dict | None = None,
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  rrc_rolloff=0.5, adc_bitres=None, dac_minmax_norm: float | str = 'auto',
-                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000),
-                 multi_channel: bool=False) -> None:
+                 lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000),
+                 multi_channel: bool=False, adc_lp_filter_type='bessel') -> None:
         super().__init__(sps=sps, esn0_db=np.nan, baud_rate=baud_rate, learning_rate=learning_rate,
-                         batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
+                         batch_size=batch_size, constellation=constellation, lr_schedule=lr_schedule,
                          eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval)
+
 
         # Define pulse shaper
         tx_filter_init = np.zeros((tx_filter_length,))
@@ -1392,13 +1416,13 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         self.optimizable_dac = dac_config.get('learnable_bias') or dac_config.get('learnable_normalization')
         self.dac = DigitalToAnalogConverter(peak_to_peak_constellation=dac_normalizer,
                                             multi_channel=multi_channel,
-                                            bessel_order=5,
                                             fs=1/self.Ts,
                                             **dac_config)
 
         # Analog-to-digial (ADC) converter
         self.adc = AnalogToDigitalConverter(bwl_cutoff=adc_bwl_cutoff_hz, fs=1/self.Ts,
-                                            bessel_order=5, bit_resolution=adc_bitres)
+                                            bit_resolution=adc_bitres,
+                                            filter_type=adc_lp_filter_type)
 
         # Define modulator
         if modulator_type == 'ideal':
@@ -1413,7 +1437,9 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
             raise Exception(f"Unknown modulator type '{modulator_type}'. Valid options are: 'ideal', 'eam' or 'nonlin_eam'")
 
         # Define channel - single mode fiber with chromatic dispersion
-        self.channel = SingleModeFiber(Fs=1/self.Ts, **smf_config)
+        self.channel = AllPassFilter()
+        if smf_config:
+            self.channel = SingleModeFiber(Fs=1/self.Ts, **smf_config)
 
         # Define photodiode
         self.photodiode = Photodiode(bandwidth=adc_bwl_cutoff_hz if adc_bwl_cutoff_hz is not None else baud_rate * 0.5,
@@ -1578,8 +1604,8 @@ class PulseShapingIM(IntensityModulationChannel):
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
                  dac_config: dict, adc_bwl_cutoff_hz, modulator_type='eam',
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc', rrc_rolloff=0.5,
-                 dac_minmax_norm: float | str = 'auto', adc_bitres=None,
-                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
+                 dac_minmax_norm: float | str = 'auto', adc_bitres=None, adc_lp_filter_type='bessel',
+                 lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
                          learn_rx=False, learn_tx=True, rx_filter_length=rx_filter_length,
@@ -1589,8 +1615,9 @@ class PulseShapingIM(IntensityModulationChannel):
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          adc_bwl_cutoff_hz=adc_bwl_cutoff_hz,
                          adc_bitres=adc_bitres, dac_minmax_norm=dac_minmax_norm,
-                         rrc_rolloff=rrc_rolloff, use_1clr=use_1clr, eval_batch_size_in_syms=eval_batch_size_in_syms,
-                         print_interval=print_interval)
+                         rrc_rolloff=rrc_rolloff, lr_schedule=lr_schedule, eval_batch_size_in_syms=eval_batch_size_in_syms,
+                         print_interval=print_interval,
+                         adc_lp_filter_type=adc_lp_filter_type)
 
 
 class RxFilteringIM(IntensityModulationChannel):
@@ -1603,8 +1630,8 @@ class RxFilteringIM(IntensityModulationChannel):
                  dac_config: dict, adc_bwl_cutoff_hz,
                  dac_minmax_norm: float | str = 'auto',
                  modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 rrc_rolloff=0.5, adc_bitres=None,
-                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
+                 rrc_rolloff=0.5, adc_bitres=None, adc_lp_filter_type='bessel',
+                 lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
                          rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
@@ -1613,8 +1640,9 @@ class RxFilteringIM(IntensityModulationChannel):
                          modulator_type=modulator_type, learn_rx=True, learn_tx=False,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          adc_bwl_cutoff_hz=adc_bwl_cutoff_hz, adc_bitres=adc_bitres,
-                         rrc_rolloff=rrc_rolloff, use_1clr=use_1clr, eval_batch_size_in_syms=eval_batch_size_in_syms,
-                         print_interval=print_interval)
+                         rrc_rolloff=rrc_rolloff, lr_schedule=lr_schedule, eval_batch_size_in_syms=eval_batch_size_in_syms,
+                         print_interval=print_interval,
+                         adc_lp_filter_type=adc_lp_filter_type)
 
 class JointTxRxIM(IntensityModulationChannel):
     """
@@ -1626,8 +1654,8 @@ class JointTxRxIM(IntensityModulationChannel):
                  dac_config: dict, adc_bwl_cutoff_hz: float,
                  dac_minmax_norm: float | str = 'auto',
                  modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 rrc_rolloff=0.5, adc_bitres=None,
-                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
+                 rrc_rolloff=0.5, adc_bitres=None, adc_lp_filter_type='bessel',
+                 lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
@@ -1637,8 +1665,9 @@ class JointTxRxIM(IntensityModulationChannel):
                          tx_filter_length=tx_filter_length,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          adc_bitres=adc_bitres,
-                         rrc_rolloff=rrc_rolloff, use_1clr=use_1clr, eval_batch_size_in_syms=eval_batch_size_in_syms,
-                         print_interval=print_interval)
+                         rrc_rolloff=rrc_rolloff, lr_schedule=lr_schedule, eval_batch_size_in_syms=eval_batch_size_in_syms,
+                         print_interval=print_interval,
+                         adc_lp_filter_type=adc_lp_filter_type)
 
 
 class LinearFFEIM(IntensityModulationChannel):
@@ -1650,8 +1679,8 @@ class LinearFFEIM(IntensityModulationChannel):
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
                  dac_config: dict, adc_bwl_cutoff_hz, dac_minmax_norm: float | str = 'auto',
                  modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 rrc_rolloff=0.5,adc_bitres=None,
-                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
+                 rrc_rolloff=0.5, adc_bitres=None, adc_lp_filter_type='bessel',
+                 lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
@@ -1661,8 +1690,9 @@ class LinearFFEIM(IntensityModulationChannel):
                          tx_filter_length=tx_filter_length,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          adc_bwl_cutoff_hz=adc_bwl_cutoff_hz, adc_bitres=adc_bitres,
-                         rrc_rolloff=rrc_rolloff, use_1clr=use_1clr, eval_batch_size_in_syms=eval_batch_size_in_syms,
-                         print_interval=print_interval)
+                         rrc_rolloff=rrc_rolloff, lr_schedule=lr_schedule, eval_batch_size_in_syms=eval_batch_size_in_syms,
+                         print_interval=print_interval,
+                         adc_lp_filter_type=adc_lp_filter_type)
 
     def get_equaliser_filter(self):
         return self.equaliser.filter.get_filter()
@@ -1700,10 +1730,11 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
                  wdm_channel_selection_rel_cutoff, dac_minmax_norm: float | str = 'auto',
                  modulator_type='eam', equaliser_config: dict | None = None,
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 rrc_rolloff=0.5, use_1clr=False, eval_batch_size_in_syms=1000,
+                 adc_lp_filter_type='bessel',
+                 rrc_rolloff=0.5, lr_schedule='oneclr', eval_batch_size_in_syms=1000,
                  print_interval=int(50000), torch_seed=0) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
-                         batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
+                         batch_size=batch_size, constellation=constellation, lr_schedule=lr_schedule,
                          learn_rx=learn_rx, learn_tx=learn_tx, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                          dac_config=dac_config, dac_minmax_norm=dac_minmax_norm,
@@ -1711,7 +1742,7 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          adc_bwl_cutoff_hz=adc_bwl_cutoff_hz, rrc_rolloff=rrc_rolloff, adc_bitres=None,
                          eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
-                         multi_channel=True)
+                         multi_channel=True, adc_lp_filter_type=adc_lp_filter_type)
 
         self.wdm_n_channels = 3  # always three channels during training
         self.wdm_channel_spacing_hz = wdm_channel_spacing_hz
@@ -1866,13 +1897,13 @@ class PulseShapingIMwithWDM(IntensityModulationChannelwithWDM):
                  rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
                  dac_config: dict, wdm_channel_spacing_hz, wdm_channel_selection_rel_cutoff,
-                 adc_bwl_cutoff_hz, modulator_type='eam',
+                 adc_bwl_cutoff_hz, adc_lp_filter_type='bessel', modulator_type='eam',
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_minmax_norm: float | str = 'auto', rrc_rolloff=0.5,
-                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000),
+                 lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000),
                  torch_seed=0) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
-                         batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
+                         batch_size=batch_size, constellation=constellation, lr_schedule=lr_schedule,
                          learn_rx=False, learn_tx=True, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                          dac_config=dac_config, dac_minmax_norm=dac_minmax_norm,
@@ -1882,7 +1913,7 @@ class PulseShapingIMwithWDM(IntensityModulationChannelwithWDM):
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          adc_bwl_cutoff_hz=adc_bwl_cutoff_hz,
                          rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
-                         torch_seed=torch_seed)
+                         torch_seed=torch_seed, adc_lp_filter_type=adc_lp_filter_type)
 
 
 class RxFilteringIMwithWDM(IntensityModulationChannelwithWDM):
@@ -1896,13 +1927,13 @@ class RxFilteringIMwithWDM(IntensityModulationChannelwithWDM):
                  rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
                  dac_config: dict, wdm_channel_spacing_hz, adc_bwl_cutoff_hz, 
-                 wdm_channel_selection_rel_cutoff,
+                 wdm_channel_selection_rel_cutoff, adc_lp_filter_type='bessel',
                  modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_minmax_norm: float | str = 'auto', rrc_rolloff=0.5,
-                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000),
+                 lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000),
                  torch_seed=0) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
-                         batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
+                         batch_size=batch_size, constellation=constellation, lr_schedule=lr_schedule,
                          learn_rx=True, learn_tx=False, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                          dac_config=dac_config, dac_minmax_norm=dac_minmax_norm,
@@ -1912,7 +1943,7 @@ class RxFilteringIMwithWDM(IntensityModulationChannelwithWDM):
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          adc_bwl_cutoff_hz=adc_bwl_cutoff_hz,
                          rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
-                         torch_seed=torch_seed)
+                         torch_seed=torch_seed, adc_lp_filter_type=adc_lp_filter_type)
 
 
 class JointTxRxIMwithWDM(IntensityModulationChannelwithWDM):
@@ -1927,11 +1958,11 @@ class JointTxRxIMwithWDM(IntensityModulationChannelwithWDM):
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
                  dac_config: dict, wdm_channel_spacing_hz, wdm_channel_selection_rel_cutoff,
                  adc_bwl_cutoff_hz, modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 dac_minmax_norm: float | str = 'auto', rrc_rolloff=0.5,
-                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000),
+                 dac_minmax_norm: float | str = 'auto', rrc_rolloff=0.5, adc_lp_filter_type='bessel',
+                 lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000),
                  torch_seed=0) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
-                         batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
+                         batch_size=batch_size, constellation=constellation, lr_schedule=lr_schedule,
                          learn_rx=True, learn_tx=True, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                          dac_config=dac_config, dac_minmax_norm=dac_minmax_norm,
@@ -1939,7 +1970,7 @@ class JointTxRxIMwithWDM(IntensityModulationChannelwithWDM):
                          wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                          modulator_type=modulator_type, equaliser_config=None,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
-                         adc_bwl_cutoff_hz=adc_bwl_cutoff_hz,
+                         adc_bwl_cutoff_hz=adc_bwl_cutoff_hz, adc_lp_filter_type=adc_lp_filter_type,
                          rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
                          torch_seed=torch_seed)
 
@@ -1956,17 +1987,17 @@ class LinearFFEIMwithWDM(IntensityModulationChannelwithWDM):
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
                  dac_config: dict, adc_bwl_cutoff_hz,  wdm_channel_spacing_hz, wdm_channel_selection_rel_cutoff,
                  modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
-                 dac_minmax_norm: float | str = 'auto', rrc_rolloff=0.5,
-                 use_1clr=False, eval_batch_size_in_syms=1000, print_interval=int(50000),
+                 dac_minmax_norm: float | str = 'auto', rrc_rolloff=0.5, adc_lp_filter_type='bessel',
+                 lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000),
                  torch_seed=0) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
-                         batch_size=batch_size, constellation=constellation, use_1clr=use_1clr,
+                         batch_size=batch_size, constellation=constellation, lr_schedule=lr_schedule,
                          learn_rx=False, learn_tx=False, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                          dac_config=dac_config, wdm_channel_spacing_hz=wdm_channel_spacing_hz,
                          wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                          modulator_type=modulator_type, equaliser_config={'n_taps': ffe_n_taps},
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
-                         dac_minmax_norm=dac_minmax_norm, adc_bwl_cutoff_hz=adc_bwl_cutoff_hz,
+                         dac_minmax_norm=dac_minmax_norm, adc_bwl_cutoff_hz=adc_bwl_cutoff_hz, adc_lp_filter_type=adc_lp_filter_type,
                          rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
                          torch_seed=torch_seed)

@@ -4,7 +4,7 @@ from torchaudio.functional import convolve, lfilter
 from torch.fft import fft, ifft, fftshift, ifftshift, fftfreq
 import numpy.typing as npt
 import numpy as np
-from scipy.signal import bessel, group_delay
+from scipy.signal import bessel, group_delay, firwin
 from scipy.signal import lfilter as scipy_lfilter
 
 # FIXME: Simplify these operations
@@ -284,3 +284,38 @@ class GaussianFqFilter(torch.nn.Module):
         filter = self._calculate_filter(torch.from_numpy(fqs)).numpy()
         X = np.fft.fftshift(np.fft.fft(xnp))/len(xnp)
         return torch.from_numpy(np.fft.ifft(np.fft.ifftshift(X * filter))*len(X))
+
+
+class LowPassFIR(torch.nn.Module):
+    """
+        Low pass FIR filter designed with firwin from scipy
+    """
+    def __init__(self, num_taps: int, cutoff_hz: float, fs: float,
+                 dtype=torch.float64, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        assert (num_taps - 1) % 2 == 0
+        self.dtype = dtype
+        filter_coefs = firwin(num_taps, cutoff_hz, fs=fs)
+        self.lp_filter = FIRfilter(filter_weights=filter_coefs, stride=1, trainable=False, dtype=dtype)
+        # Crude estimate of sample delay through filter - take average in passband
+        f, gd = group_delay((filter_coefs, 1), fs=fs)
+        self.delay = np.average(gd[np.where(f < cutoff_hz)])
+
+    def forward(self, x):
+        return self.lp_filter.forward(x)
+
+    def forward_numpy(self, y):
+        h = self.lp_filter.get_filter()
+        ynp = y.detach().cpu().numpy()
+        return torch.from_numpy(np.convolve(np.pad(ynp, (len(h) - 1)//2),
+                                            h, mode='valid'))
+
+    def forward_batched(self, x, batch_size):
+        print("LowPassFIR: Warning! Using Numpy forward method (ignoring batch size)")
+        return self.forward_numpy(x)
+
+    def get_filters(self):
+        return self.lp_filter.get_filter(), 1
+    
+    def get_sample_delay(self):
+        return self.delay
