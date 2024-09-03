@@ -8,7 +8,7 @@ from torchcubicspline import natural_cubic_spline_coeffs, NaturalCubicSpline
 from scipy.interpolate import CubicSpline
 from scipy.optimize import newton
 
-from .filtering import BesselFilter, MultiChannelBesselFilter, AllPassFilter
+from .filtering import BesselFilter, MultiChannelBesselFilter, AllPassFilter, LowPassFIR
 
 
 class IdealLinearModulator(object):
@@ -233,8 +233,9 @@ class DigitalToAnalogConverter(torch.nn.Module):
         DAC with bandwidth limitation modeled by a Bessel filter
     """
     def __init__(self, bwl_cutoff, peak_to_peak_voltage, peak_to_peak_constellation: float | str,
-                 fs, bias_voltage: float | str ='negative_vpp', bit_resolution=None, bessel_order=5,
+                 fs, bias_voltage: float | str ='negative_vpp', bit_resolution=None, lpf_order=5,
                  learnable_normalization=False, learnable_bias=False, multi_channel: bool=False,
+                 filter_type='bessel', clamp_min=-0.5, clamp_max=0.5,
                  dtype=torch.float64, **kwargs) -> None:
         super().__init__(**kwargs)
 
@@ -244,7 +245,11 @@ class DigitalToAnalogConverter(torch.nn.Module):
         self.v_pp = peak_to_peak_voltage
         self.pp_const = peak_to_peak_constellation  # distance between largest and smallest constellation point
         self.voltage_norm_funcp = self._vol_norm_const
-        self.clamp_min, self.clamp_max = -0.5, 0.5
+        self.clamp_min, self.clamp_max = clamp_min, clamp_max
+        self._clamp_funcp = self._clamp_voltage_std
+        if self.clamp_min is None and self.clamp_max is None:
+            self._clamp_funcp = self._bypass_clamp
+
         norm_init = 1.0
         bias_init = 0.0
 
@@ -276,13 +281,27 @@ class DigitalToAnalogConverter(torch.nn.Module):
         # Initialize bessel filter
         self.lpf = AllPassFilter()
         if bwl_cutoff is not None:
-            if multi_channel:
-                self.lpf = MultiChannelBesselFilter(bessel_order=bessel_order, cutoff_hz=bwl_cutoff, fs=fs, dtype=dtype)
+            if filter_type.lower() == 'bessel':
+                if multi_channel:
+                    self.lpf = MultiChannelBesselFilter(bessel_order=lpf_order, cutoff_hz=bwl_cutoff, fs=fs, dtype=dtype)
+                else:
+                    self.lpf = BesselFilter(bessel_order=lpf_order, cutoff_hz=bwl_cutoff, fs=fs, dtype=dtype)
+            elif filter_type.lower() == 'fir':
+                if multi_channel:
+                    raise NotImplementedError(f"Have not implemented multi-channel version of FIR yet...")
+                else:
+                    self.lpf = LowPassFIR(num_taps=lpf_order, cutoff_hz=bwl_cutoff, fs=fs, dtype=dtype)
             else:
-                self.lpf = BesselFilter(bessel_order=bessel_order, cutoff_hz=bwl_cutoff, fs=fs, dtype=dtype)
+                raise ValueError(f"Unknown filter type: {filter_type}")
 
-    def _clamp_voltage(self, x):
+    def clamp_voltage(self, x: torch.TensorType) -> torch.TensorType:
+        return self._clamp_funcp(x)
+
+    def _clamp_voltage_std(self, x):
         return torch.clamp(x, self.clamp_min, self.clamp_max)
+    
+    def _bypass_clamp(self, x):
+        return x
 
     def set_bitres(self, new_bitres):
         assert isinstance(new_bitres, int) or new_bitres is None
@@ -306,7 +325,7 @@ class DigitalToAnalogConverter(torch.nn.Module):
 
     def forward(self, x):
         # Map digital signal to a voltage - clamped to [-Vpp/2, Vpp/2]
-        v = self.v_pp * self._clamp_voltage(self.voltage_normalization(x))
+        v = self.v_pp * self.clamp_voltage(self.voltage_normalization(x))
 
         # Run lpf
         v_lp = self.lpf.forward(v)
@@ -315,7 +334,7 @@ class DigitalToAnalogConverter(torch.nn.Module):
 
     def eval(self, x):
         # Map digital signal to a voltage
-        v = self.v_pp * self._clamp_voltage(self.voltage_normalization(x))
+        v = self.v_pp * self.clamp_voltage(self.voltage_normalization(x))
 
         if self.bit_resolution:
             v = quantize(v, self.bit_resolution)
@@ -328,17 +347,22 @@ class DigitalToAnalogConverter(torch.nn.Module):
 
 class AnalogToDigitalConverter(object):
     """
-        ADC with bandwidth limitation modeled by a Bessel filter
+        ADC with bandwidth limitation modeled by a low-pass filter
     """
-    def __init__(self, bwl_cutoff, fs, bit_resolution=None, bessel_order=5, dtype=torch.float64) -> None:
+    def __init__(self, bwl_cutoff, fs, bit_resolution=None, lpf_order=5, 
+                 filter_type='bessel', dtype=torch.float64) -> None:
         # Set attributes
         self.bit_resolution = bit_resolution
         self.dtype = dtype
 
         # Initialize bessel filter
         self.lpf = AllPassFilter()
-        if bwl_cutoff is not None:
-            self.lpf = BesselFilter(bessel_order=bessel_order, cutoff_hz=bwl_cutoff, fs=fs, dtype=dtype)
+        if bwl_cutoff is not None and filter_type == 'bessel':
+            self.lpf = BesselFilter(bessel_order=lpf_order, cutoff_hz=bwl_cutoff, fs=fs, dtype=dtype)
+        elif bwl_cutoff is not None and filter_type == 'fir':
+            self.lpf = LowPassFIR(num_taps=lpf_order, cutoff_hz=bwl_cutoff, fs=fs, dtype=dtype)
+        else:
+            raise ValueError(f"Unknown filter_type: {filter_type}")
 
     def set_bitres(self, new_bitres):
         assert isinstance(new_bitres, int) or new_bitres is None

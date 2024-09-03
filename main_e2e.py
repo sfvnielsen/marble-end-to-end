@@ -39,12 +39,11 @@ if __name__ == "__main__":
     eval_snr_db = 8.0
     mod_order = 4  # PAM
     rrc_rolloff = 0.01  # for initialization
-    learn_tx, tx_filter_length = False, 15
+    learn_tx, tx_filter_length = True, 15
     learn_rx, rx_filter_length = True, 15
     dac_bwl_relative_cutoff = 0.9  # low-pass filter cuttoff relative to bandwidth of the baseband signal
     adc_bwl_relative_cutoff = 0.9
-    use_1clr = True  # learning rate scheduling of the optimizer
-    use_brickwall = False
+    lr_schedule = 'oneclr'  # learning rate scheduling of the optimizer
 
     figtitles = 'pulseshaping' if learn_tx else 'rxfilt'
     if learn_tx and learn_rx:
@@ -71,9 +70,9 @@ if __name__ == "__main__":
     awgn_system = BasicAWGNwithBWL(sps=samples_per_symbol, esn0_db=train_snr_db, baud_rate=baud_rate,
                                    learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                    learn_tx=learn_tx, learn_rx=learn_rx, rrc_rolloff=rrc_rolloff,
-                                   tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr, use_brickwall=use_brickwall,
+                                   tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, lr_schedule=lr_schedule,
                                    adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
-                                   tx_filter_init_type='rrc', rx_filter_init_type='rrc')
+                                   tx_filter_init_type='rrc', rx_filter_init_type='rrc', lp_filter_type='bessel')
 
     awgn_system.initialize_optimizer()
 
@@ -116,7 +115,7 @@ if __name__ == "__main__":
     awgn_ffe_system = LinearFFEAWGNwithBWL(sps=samples_per_symbol, esn0_db=train_snr_db, baud_rate=baud_rate,
                                            learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                            ffe_n_taps=rx_filter_length, rrc_rolloff=rrc_rolloff,
-                                           tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr, use_brickwall=use_brickwall,
+                                           tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, lr_schedule=lr_schedule,
                                            adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                            tx_filter_init_type='rrc', rx_filter_init_type='rrc')
     

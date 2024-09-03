@@ -42,7 +42,7 @@ if __name__ == "__main__":
     learn_rx, rx_filter_length = True, 25
     eval_adc_bitres = 5
     eval_dac_bitres = 5
-    use_1clr = True
+    lr_schedule = 'oneclr'
     
     # Configuration for the DAC
     dac_config = {
@@ -50,10 +50,13 @@ if __name__ == "__main__":
         'bias_voltage': -2.0,
         'bwl_cutoff': 45e9,  # Hz
         'learnable_normalization': True,
-        'learnable_bias': True
+        'learnable_bias': True,
+        'filter_type': 'bessel',
+        'lpf_order': 5
     }
 
     adc_bwl_cutoff_hz = 45e9  # same as dac
+    adc_filter_type = 'bessel'
 
     # Configuration of electro absorption modulator
     modulator_type = 'eam'
@@ -106,8 +109,9 @@ if __name__ == "__main__":
     imdd_system = IntensityModulationChannel(sps=samples_per_symbol, baud_rate=baud_rate,
                                              learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                              learn_tx=learn_tx, learn_rx=learn_rx, rrc_rolloff=rrc_rolloff,
-                                             tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
-                                             adc_bwl_cutoff_hz=adc_bwl_cutoff_hz, adc_bitres=None, dac_minmax_norm='auto',
+                                             tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, lr_schedule=lr_schedule,
+                                             adc_bwl_cutoff_hz=adc_bwl_cutoff_hz, adc_bitres=None, adc_lp_filter_type=adc_filter_type,
+                                             dac_minmax_norm='auto',
                                              tx_filter_init_type='rrc', rx_filter_init_type='rrc',
                                              smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
                                              modulator_type=modulator_type, dac_config=dac_config)
@@ -144,7 +148,7 @@ if __name__ == "__main__":
     imdd_system_ffe = LinearFFEIM(sps=samples_per_symbol, baud_rate=baud_rate,
                                   learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                   rrc_rolloff=rrc_rolloff, ffe_n_taps=rx_filter_length,
-                                  tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr,
+                                  tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, lr_schedule=lr_schedule,
                                   adc_bitres=None, dac_minmax_norm='auto',
                                   tx_filter_init_type='rrc', rx_filter_init_type='rrc',
                                   smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
