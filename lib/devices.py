@@ -276,19 +276,20 @@ class DigitalToAnalogConverter(torch.nn.Module):
 
         # Initialize bessel filter
         self.lpf = AllPassFilter()
-        if bwl_cutoff is not None and filter_type.lower() == 'bessel':
-            if multi_channel:
-                self.lpf = MultiChannelBesselFilter(bessel_order=lpf_order, cutoff_hz=bwl_cutoff, fs=fs, dtype=dtype)
+        if bwl_cutoff is not None:
+            if filter_type.lower() == 'bessel':
+                if multi_channel:
+                    self.lpf = MultiChannelBesselFilter(bessel_order=lpf_order, cutoff_hz=bwl_cutoff, fs=fs, dtype=dtype)
+                else:
+                    self.lpf = BesselFilter(bessel_order=lpf_order, cutoff_hz=bwl_cutoff, fs=fs, dtype=dtype)
+            elif filter_type.lower() == 'fir':
+                if multi_channel:
+                    raise NotImplementedError(f"Have not implemented multi-channel version of FIR yet...")
+                else:
+                    self.lpf = LowPassFIR(num_taps=lpf_order, cutoff_hz=bwl_cutoff, fs=fs, dtype=dtype)
             else:
-                self.lpf = BesselFilter(bessel_order=lpf_order, cutoff_hz=bwl_cutoff, fs=fs, dtype=dtype)
-        elif bwl_cutoff is not None and filter_type.lower() == 'fir':
-            if multi_channel:
-                raise NotImplementedError(f"Have not implemented multi-channel version of FIR yet...")
-            else:
-                self.lpf = LowPassFIR(num_taps=lpf_order, cutoff_hz=bwl_cutoff, fs=fs, dtype=dtype)
-        else:
-            raise ValueError(f"Unknown filter type: {filter_type}")
-        
+                raise ValueError(f"Unknown filter type: {filter_type}")
+            
 
     def _clamp_voltage(self, x):
         return torch.clamp(x, self.clamp_min, self.clamp_max)
