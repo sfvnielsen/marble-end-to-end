@@ -235,7 +235,7 @@ class DigitalToAnalogConverter(torch.nn.Module):
     def __init__(self, bwl_cutoff, peak_to_peak_voltage, peak_to_peak_constellation: float | str,
                  fs, bias_voltage: float | str ='negative_vpp', bit_resolution=None, lpf_order=5,
                  learnable_normalization=False, learnable_bias=False, multi_channel: bool=False,
-                 filter_type='bessel',
+                 filter_type='bessel', clamp_min=-0.5, clamp_max=0.5,
                  dtype=torch.float64, **kwargs) -> None:
         super().__init__(**kwargs)
 
@@ -245,7 +245,7 @@ class DigitalToAnalogConverter(torch.nn.Module):
         self.v_pp = peak_to_peak_voltage
         self.pp_const = peak_to_peak_constellation  # distance between largest and smallest constellation point
         self.voltage_norm_funcp = self._vol_norm_const
-        self.clamp_min, self.clamp_max = -0.5, 0.5
+        self.clamp_min, self.clamp_max = clamp_min, clamp_max
         norm_init = 1.0
         bias_init = 0.0
 
