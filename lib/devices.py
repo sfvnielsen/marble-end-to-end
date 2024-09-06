@@ -246,6 +246,10 @@ class DigitalToAnalogConverter(torch.nn.Module):
         self.pp_const = peak_to_peak_constellation  # distance between largest and smallest constellation point
         self.voltage_norm_funcp = self._vol_norm_const
         self.clamp_min, self.clamp_max = clamp_min, clamp_max
+        self._clamp_funcp = self._clamp_voltage_std
+        if self.clamp_min is None and self.clamp_max is None:
+            self._clamp_funcp = self._bypass_clamp
+
         norm_init = 1.0
         bias_init = 0.0
 
@@ -289,10 +293,15 @@ class DigitalToAnalogConverter(torch.nn.Module):
                     self.lpf = LowPassFIR(num_taps=lpf_order, cutoff_hz=bwl_cutoff, fs=fs, dtype=dtype)
             else:
                 raise ValueError(f"Unknown filter type: {filter_type}")
-            
 
-    def _clamp_voltage(self, x):
+    def clamp_voltage(self, x: torch.TensorType) -> torch.TensorType:
+        return self._clamp_funcp(x)
+
+    def _clamp_voltage_std(self, x):
         return torch.clamp(x, self.clamp_min, self.clamp_max)
+    
+    def _bypass_clamp(self, x):
+        return x
 
     def set_bitres(self, new_bitres):
         assert isinstance(new_bitres, int) or new_bitres is None
@@ -316,7 +325,7 @@ class DigitalToAnalogConverter(torch.nn.Module):
 
     def forward(self, x):
         # Map digital signal to a voltage - clamped to [-Vpp/2, Vpp/2]
-        v = self.v_pp * self._clamp_voltage(self.voltage_normalization(x))
+        v = self.v_pp * self.clamp_voltage(self.voltage_normalization(x))
 
         # Run lpf
         v_lp = self.lpf.forward(v)
@@ -325,7 +334,7 @@ class DigitalToAnalogConverter(torch.nn.Module):
 
     def eval(self, x):
         # Map digital signal to a voltage
-        v = self.v_pp * self._clamp_voltage(self.voltage_normalization(x))
+        v = self.v_pp * self.clamp_voltage(self.voltage_normalization(x))
 
         if self.bit_resolution:
             v = quantize(v, self.bit_resolution)
