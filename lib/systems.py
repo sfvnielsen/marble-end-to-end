@@ -17,7 +17,7 @@ from .utility import find_max_variance_sample, symbol_sync, permute_symbols
 from .devices import ElectroAbsorptionModulator, MyNonLinearEAM, Photodiode,\
                      IdealLinearModulator, DigitalToAnalogConverter, AnalogToDigitalConverter,\
                      MachZehnderModulator
-from .channels import SingleModeFiber
+from .channels import SingleModeFiber, SurrogateChannel
 from .equalization import LinearFeedForwardEqualiser
 
 # TODO: Implement GPU support
@@ -202,7 +202,7 @@ class LearnableTransmissionSystem(object):
     """
     def __init__(self, sps, esn0_db, baud_rate, learning_rate, batch_size, constellation,
                  lr_schedule='expdecay', eval_batch_size_in_syms=1000, print_interval=int(5e4),
-                 gradient_norm_clipping=True) -> None:
+                 gradient_norm_clipping=True, use_surrogate_channel=False, surrogate_channel_kwargs: dict = {}) -> None:
         self.esn0_db = esn0_db
         self.baud_rate = baud_rate
         self.learning_rate = learning_rate  # learning rate of optimizer
@@ -216,19 +216,24 @@ class LearnableTransmissionSystem(object):
         self.constellation = constellation
         self.lr_schedule = lr_schedule
         self.use_gradient_norm_clipping = gradient_norm_clipping
+        self.use_surrogate_channel = use_surrogate_channel
+        
+        if use_surrogate_channel:
+            self.surrogate_channel = SurrogateChannel(**surrogate_channel_kwargs)
+            self.channel_loss_weight = 10.0  # FIXME: Temperature controlled?
 
     def print_system_info(self):
         # FIXME
         pass
 
     def initialize_optimizer(self):
-        self.optimizer = torch.optim.Adam(self.get_parameters(), lr=self.learning_rate)
+        params = self.get_parameters()
+        if self.use_surrogate_channel:
+            params += [{"params": self.surrogate_channel.parameters()}]
+        self.optimizer = torch.optim.Adam(params, lr=self.learning_rate)
 
     def set_esn0_db(self, new_esn0_db):
         self.esn0_db = new_esn0_db
-
-    def forward(self, symbols_up: torch.TensorType) -> torch.TensorType:
-        raise NotImplementedError
 
     def _eval(self, symbols_up: torch.TensorType, batch_size: int, decimate: bool = True) -> torch.TensorType:
         raise NotImplementedError
@@ -241,9 +246,33 @@ class LearnableTransmissionSystem(object):
 
     def calculate_loss(self, tx_syms: torch.TensorType, rx_syms: torch.TensorType):
         raise NotImplementedError
+    
+    def calculate_channel_loss(self, y_pred: torch.TensorType, y_true: torch.TensorType, channel_delay: int = 0):
+        discard_samples = self.surrogate_channel.get_samples_discard()
+        return torch.mean(torch.square(torch.subtract(torch.roll(y_pred, -channel_delay)[discard_samples:-discard_samples],
+                                                      y_true[discard_samples:-discard_samples])))
+
+    def get_channel_delay(self):
+        raise NotImplementedError
 
     def get_esn0_db(self):
         return self.esn0_db
+    
+    def forward_tx(self, x_syms_up: torch.TensorType) -> torch.TensorType:
+        raise NotImplementedError
+
+    def forward_channel(self, tx_signal: torch.TensorType) -> torch.TensorType:
+        raise NotImplementedError
+    
+    def forward_rx(self, y_channel: torch.TensorType) -> torch.TensorType:
+        raise NotImplementedError
+
+    # full forward pass
+    def forward(self, symbols_up: torch.TensorType) -> torch.TensorType:
+        tx  = self.forward_tx(symbols_up)
+        ychan = self.forward_channel(tx)
+        y = self.forward_rx(ychan)
+        return y
 
     def calculate_noise_std(self, input_signal):
         """
@@ -308,10 +337,21 @@ class LearnableTransmissionSystem(object):
             tx_syms_up = torch.from_numpy(this_a_up)
 
             # Run upsampled symbols through system forward model - return symbols at Rx
-            rx_out = self.forward(tx_syms_up)
+            tx  = self.forward_tx(tx_syms_up)
+            if self.use_surrogate_channel:
+                # FIXME: Multiple steps pr. batch?
+                ychan = self.surrogate_channel.forward(tx)
+                with torch.no_grad():
+                    ychan_true = self.forward_channel(tx)
+                rx_out = self.forward_rx(ychan_true)
+            else:
+                ychan = self.forward_channel(tx)
+                rx_out = self.forward_rx(ychan)
 
             # Calculate loss
             loss = self.calculate_loss(target, rx_out)
+            if self.use_surrogate_channel:
+                loss += self.channel_loss_weight * self.calculate_channel_loss(ychan, ychan_true, channel_delay=0)  # FIXME: self.get_channel_delay()
 
             # Update model using backpropagation
             self.update_model(loss)
@@ -524,7 +564,8 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
                  dac_bwl_relative_cutoff, learn_tx: bool, learn_rx: bool, equaliser_config: dict | None = None,
                  tx_filter_init_type='dirac', rx_filter_init_type='dirac',
                  print_interval=int(5e4), lp_filter_type='bessel', lr_schedule='oneclr',
-                 rrc_rolloff=0.5, tx_multi_channel: bool = False) -> None:
+                 rrc_rolloff=0.5, tx_multi_channel: bool = False, use_surrogate_channel=False,
+                 surrogate_channel_kwargs: dict = {}) -> None:
         super().__init__(sps=sps,
                          esn0_db=esn0_db,
                          baud_rate=baud_rate,
@@ -532,7 +573,9 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
                          batch_size=batch_size,
                          constellation=constellation,
                          print_interval=print_interval,
-                         lr_schedule=lr_schedule)
+                         lr_schedule=lr_schedule,
+                         use_surrogate_channel=use_surrogate_channel,
+                         surrogate_channel_kwargs=surrogate_channel_kwargs)
 
         # Define pulse shaper
         tx_filter_init = np.zeros((tx_filter_length,))
@@ -613,8 +656,11 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         self.constellation_scale = np.sqrt(np.average(np.square(constellation)))
 
         # Total symbol delay introduced by the two LPFs
-        self.channel_delay = int(np.ceil((self.adc.get_sample_delay() + self.dac.get_sample_delay())/self.sps))
-        print(f"Channel delay is {self.channel_delay} [symbols]")
+        self.channel_delay_in_syms = int(np.ceil((self.adc.get_sample_delay() + self.dac.get_sample_delay())/self.sps))
+        print(f"Channel delay is {self.channel_delay_in_syms} [symbols]")
+
+    def get_channel_delay(self):
+        return int(np.ceil((self.adc.get_sample_delay() + self.dac.get_sample_delay())))
 
     def get_parameters(self):
         params_to_return = []
@@ -629,13 +675,16 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         self.rx_filter.zero_grad()
         self.equaliser.zero_grad()
 
-    def forward(self, symbols_up: torch.TensorType):
+    def forward_tx(self, x_syms_up: torch.TensorType) -> torch.TensorType:
         # Input is assumed to be upsampled sybmols
         # Apply pulse shaper
-        x = self.pulse_shaper.forward(symbols_up)
-
+        x = self.pulse_shaper.forward(x_syms_up)
+        
+        return x
+    
+    def forward_channel(self, tx_signal: torch.TensorType) -> torch.TensorType:
         # Normalize
-        x = x / self.normalization_constant
+        x = tx_signal / self.normalization_constant
 
         # Apply bandwidth limitation in the DAC
         x_lp = self.dac.forward(x)
@@ -648,8 +697,11 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         # Apply bandwidth limitation in the ADC
         y_lp = self.adc.forward(y)
 
+        return  y_lp
+
+    def forward_rx(self, y_channel: torch.TensorType) -> torch.TensorType:
         # Apply rx filter
-        rx_filter_out = self.rx_filter.forward(y_lp)
+        rx_filter_out = self.rx_filter.forward(y_channel)
 
         # Apply equaliser
         eq_out = self.equaliser.forward(rx_filter_out)
@@ -693,7 +745,7 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         return rx_eq_out
 
     def calculate_loss(self, tx_syms: torch.TensorType, rx_syms: torch.TensorType):
-        return torch.mean(torch.square(tx_syms[self.discard_per_batch:-self.discard_per_batch] - torch.roll(rx_syms, -self.channel_delay)[self.discard_per_batch:-self.discard_per_batch]))
+        return torch.mean(torch.square(tx_syms[self.discard_per_batch:-self.discard_per_batch] - torch.roll(rx_syms, -self.channel_delay_in_syms)[self.discard_per_batch:-self.discard_per_batch]))
 
     def update_model(self, loss):
         super().update_model(loss)
@@ -1142,8 +1194,8 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
         self.discard_per_batch = int(((self.pulse_shaper.filter_length + self.rx_filter.filter_length) // 2) / self.sps)
 
         # Calculate estimate of channel delay (in symbols)
-        self.channel_delay = int(np.ceil((isi_delay + self.adc.get_sample_delay() + self.dac.get_sample_delay()) / sps))
-        print(f"Channel delay is {self.channel_delay} [symbols] (ISI contributed with {int(np.ceil(isi_delay / sps))})")
+        self.channel_delay_in_syms = int(np.ceil((isi_delay + self.adc.get_sample_delay() + self.dac.get_sample_delay()) / sps))
+        print(f"Channel delay is {self.channel_delay_in_syms} [symbols] (ISI contributed with {int(np.ceil(isi_delay / sps))})")
 
         # Calculate constellation scale
         self.constellation_scale = np.sqrt(np.average(np.square(constellation)))
@@ -1225,7 +1277,7 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
 
     def calculate_loss(self, tx_syms: torch.TensorType, rx_syms: torch.TensorType):
         # NB! Rx sequence is coarsely aligned to the tx-symbol sequence based on a apriori known channel delay.
-        return torch.mean(torch.square(tx_syms[self.discard_per_batch:-self.discard_per_batch] - torch.roll(rx_syms, -self.channel_delay)[self.discard_per_batch:-self.discard_per_batch]))
+        return torch.mean(torch.square(tx_syms[self.discard_per_batch:-self.discard_per_batch] - torch.roll(rx_syms, -self.channel_delay_in_syms)[self.discard_per_batch:-self.discard_per_batch]))
 
     def update_model(self, loss):
         super().update_model(loss)
@@ -1450,8 +1502,8 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         self.discard_per_batch = int(((self.pulse_shaper.filter_length + self.rx_filter.filter_length) // 2) / self.sps)
 
         # Calculate estimate of channel delay (in symbols)
-        self.channel_delay = int(np.ceil((self.adc.get_sample_delay() + self.dac.get_sample_delay()) / sps))
-        print(f"Channel delay is {self.channel_delay} [symbols]")
+        self.channel_delay_in_syms = int(np.ceil((self.adc.get_sample_delay() + self.dac.get_sample_delay()) / sps))
+        print(f"Channel delay is {self.channel_delay_in_syms} [symbols]")
 
         # Calculate constellation scale
         self.constellation_scale = np.sqrt(np.average(np.square(constellation)))
@@ -1580,7 +1632,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
 
     def calculate_loss(self, tx_syms: torch.TensorType, rx_syms: torch.TensorType):
         # NB! Rx sequence is coarsely aligned to the tx-symbol sequence based on a apriori known channel delay.
-        return torch.mean(torch.square(tx_syms[self.discard_per_batch:-self.discard_per_batch] - torch.roll(rx_syms, -self.channel_delay)[self.discard_per_batch:-self.discard_per_batch]))
+        return torch.mean(torch.square(tx_syms[self.discard_per_batch:-self.discard_per_batch] - torch.roll(rx_syms, -self.channel_delay_in_syms)[self.discard_per_batch:-self.discard_per_batch]))
 
     def update_model(self, loss):
         super().update_model(loss)

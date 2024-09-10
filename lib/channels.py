@@ -6,6 +6,8 @@ import torch
 import numpy as np
 from torch.fft import fft, ifft, fftfreq, fftshift
 
+from .filtering import FIRfilter
+
 class SingleModeFiber(object):
     """
         SMF with chromatic dispersion
@@ -75,3 +77,18 @@ class SingleModeFiber(object):
         omega = 2 * torch.pi * self.Fs * fftfreq(Nfft)
         xo = ifft(fft(x) * self._calculate_fq_filter(omega))
         return xo
+
+
+class SurrogateChannel(torch.nn.Module):
+    def __init__(self, n_taps, **kwargs):
+        super().__init__(**kwargs)
+        self.filter_length = n_taps
+        h = np.zeros((n_taps,))
+        h[n_taps // 2] = 1.0  # dirac initialization
+        self.channel_model = FIRfilter(h, stride=1, trainable=True)
+    
+    def forward(self, x):
+        return self.channel_model.forward(x)
+    
+    def get_samples_discard(self):
+        return self.filter_length // 2
