@@ -202,7 +202,7 @@ class LearnableTransmissionSystem(object):
     """
     def __init__(self, sps, esn0_db, baud_rate, learning_rate, batch_size, constellation,
                  lr_schedule='expdecay', eval_batch_size_in_syms=1000, print_interval=int(5e4),
-                 gradient_norm_clipping=False) -> None:
+                 gradient_norm_clipping=True) -> None:
         self.esn0_db = esn0_db
         self.baud_rate = baud_rate
         self.learning_rate = learning_rate  # learning rate of optimizer
