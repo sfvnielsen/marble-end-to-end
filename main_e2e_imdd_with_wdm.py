@@ -181,7 +181,6 @@ if __name__ == "__main__":
     fig, ax = plt.subplots()
     sns.barplot(data=pd.DataFrame(res_dicts), x='method', y='ser', ax=ax)
     ax.set_yscale('log')
-    ax.set_xlabel('Channel spacing [GHz]')
     ax.set_ylabel('SER')
     ax.grid()
     fig.tight_layout()
@@ -192,13 +191,14 @@ if __name__ == "__main__":
     symbols_up = torch.zeros((len(a) * samples_per_symbol, ), dtype=torch.float64)
     symbols_up[::samples_per_symbol] = torch.from_numpy(a)
 
-    for s, sys in enumerate(systems_under_test):
+    for s, (sys, label) in enumerate(zip([joint_tx_rx, ps_sys, rxf_sys, ffe_sys],
+                                         ['PS \& RxF', 'PS', 'RxF', 'RRC \& FFE'])):
         with torch.no_grad():
             tx_wdm = sys.eval_tx(symbols_up, channel_spacing_hz=wdm_channel_spacing, batch_size=int(1e5))
             tx_chan = sys.channel_selection_filter.forward(tx_wdm)
         ax[s].psd(tx_wdm, Fs=1 / sys.Ts, label='Tx WDM', sides='twosided')
         ax[s].psd(tx_chan, Fs=1 / sys.Ts, label='Tx Chan select', sides='twosided')
-        ax[s].set_title(f"{sys}")
+        ax[s].set_title(label)
 
     # Plot the learned filters
     fig, ax = plt.subplots(nrows=2)

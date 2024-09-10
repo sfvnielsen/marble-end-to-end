@@ -1,0 +1,12 @@
+{
+    "sps": 4,
+    "esn0_db": 8.0,
+    "baud_rate": 100e9,
+    "learning_rate": 1e-3,
+    "batch_size": 1000,
+    "rrc_rolloff": 0.1,
+    "tx_filter_length": 25,
+    "rx_filter_length": 25,
+    "lr_schedule": "expdecay",
+    "filter_init_type": "dirac"
+}

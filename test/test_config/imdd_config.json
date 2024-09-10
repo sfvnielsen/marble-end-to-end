@@ -1,0 +1,36 @@
+{
+    "sps": 8,
+    "baud_rate": 100e9,
+    "learning_rate": 1e-3, 
+    "batch_size": 1000,
+    "rx_filter_length": 65,
+    "tx_filter_length": 65,
+    "smf_config": {
+        "attenuation": 0.2,
+        "carrier_wavelength": 1270,
+        "zero_dispersion_wavelength": 1310,
+        "dispersion_slope": 0.092,
+        "fiber_length": 0.0
+    },
+    "photodiode_config": {
+        "responsivity": 1.0,
+        "temperature": 20.0,
+        "dark_current": 10e-9,
+        "impedance_load": 50.0
+    },
+    "modulator_type": "eam",
+    "modulator_config": {
+        "laser_power_dbm": -13.0,
+        "linewidth_enhancement": 1.0
+    },
+    "dac_config": {
+        "peak_to_peak_voltage": 2.5,
+        "bias_voltage": -1.5,
+        "learnable_normalization": true,
+        "learnable_bias": false,
+        "bwl_cutoff": 55e9
+    },
+    "dac_minmax_norm": "auto",
+    "adc_bwl_cutoff_hz": 55e9,
+    "rrc_rolloff": 0.1
+}

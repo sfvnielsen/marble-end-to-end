@@ -1,0 +1,15 @@
+{
+    "sps": 4,
+    "esn0_db": 8.0,
+    "baud_rate": 100e9,
+    "learning_rate": 1e-3,
+    "batch_size": 1000,
+    "rrc_rolloff": 0.1,
+    "tx_filter_length": 25,
+    "rx_filter_length": 25,
+    "lr_schedule": "oneclr",
+    "adc_bwl_relative_cutoff": 0.8,
+    "dac_bwl_relative_cutoff": 0.75,
+    "wdm_channel_spacing_hz": 125e9,
+    "wdm_channel_selection_rel_cutoff": 1.3
+}
