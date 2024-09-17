@@ -217,10 +217,10 @@ class LearnableTransmissionSystem(object):
         self.lr_schedule = lr_schedule
         self.use_gradient_norm_clipping = gradient_norm_clipping
         self.use_surrogate_channel = use_surrogate_channel
-        
+
         if use_surrogate_channel:
+            self.channel_loss_weight = surrogate_channel_kwargs.pop('channel_loss_weight', 10.0)  # TODO: default value based on minimal experimentation
             self.surrogate_channel = SurrogateChannel(**surrogate_channel_kwargs)
-            self.channel_loss_weight = 10.0  # FIXME: Temperature controlled?
 
     def print_system_info(self):
         # FIXME
@@ -767,8 +767,8 @@ class PulseShapingAWGNwithBWL(BasicAWGNwithBWL):
     def __init__(self, sps, esn0_db, baud_rate, constellation, batch_size, learning_rate,
                  tx_filter_length, rx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
                  filter_init_type='dirac', print_interval=int(5e4), rrc_rolloff=0.5,
-                 lp_filter_type='bessel',
-                 lr_schedule='oneclr') -> None:
+                 lp_filter_type='bessel', lr_schedule='oneclr',
+                 use_surrogate_channel=False, surrogate_channel_kwargs: dict = {}) -> None:
         super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
@@ -782,7 +782,9 @@ class PulseShapingAWGNwithBWL(BasicAWGNwithBWL):
                          print_interval=print_interval,
                          rrc_rolloff=rrc_rolloff,
                          lp_filter_type=lp_filter_type,
-                         lr_schedule=lr_schedule)
+                         lr_schedule=lr_schedule,
+                         use_surrogate_channel=use_surrogate_channel,
+                         surrogate_channel_kwargs=surrogate_channel_kwargs)
 
 
 class RxFilteringAWGNwithBWL(BasicAWGNwithBWL):
@@ -792,7 +794,8 @@ class RxFilteringAWGNwithBWL(BasicAWGNwithBWL):
     def __init__(self, sps, esn0_db, baud_rate, constellation, batch_size, learning_rate,
                  rx_filter_length, tx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
                  filter_init_type='dirac', print_interval=int(5e4), rrc_rolloff=0.5,
-                 lp_filter_type='bessel', lr_schedule='oneclr') -> None:
+                 lp_filter_type='bessel', lr_schedule='oneclr',
+                 use_surrogate_channel=False, surrogate_channel_kwargs: dict = {}) -> None:
         super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
@@ -807,7 +810,9 @@ class RxFilteringAWGNwithBWL(BasicAWGNwithBWL):
                          print_interval=print_interval,
                          rrc_rolloff=rrc_rolloff,
                          lp_filter_type=lp_filter_type,
-                         lr_schedule=lr_schedule)
+                         lr_schedule=lr_schedule,
+                         use_surrogate_channel=use_surrogate_channel,
+                         surrogate_channel_kwargs=surrogate_channel_kwargs)
 
 
 class JointTxRxAWGNwithBWL(BasicAWGNwithBWL):
@@ -818,7 +823,8 @@ class JointTxRxAWGNwithBWL(BasicAWGNwithBWL):
                  rx_filter_length, tx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  print_interval=int(5e4), rrc_rolloff=0.5,
-                 lp_filter_type='bessel', lr_schedule='oneclr') -> None:
+                 lp_filter_type='bessel', lr_schedule='oneclr',
+                 use_surrogate_channel=False, surrogate_channel_kwargs: dict = {}) -> None:
         super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
@@ -833,7 +839,9 @@ class JointTxRxAWGNwithBWL(BasicAWGNwithBWL):
                          print_interval=print_interval,
                          rrc_rolloff=rrc_rolloff,
                          lp_filter_type=lp_filter_type,
-                         lr_schedule=lr_schedule)
+                         lr_schedule=lr_schedule,
+                         use_surrogate_channel=use_surrogate_channel,
+                         surrogate_channel_kwargs=surrogate_channel_kwargs)
 
 
 class LinearFFEAWGNwithBWL(BasicAWGNwithBWL):
@@ -845,7 +853,8 @@ class LinearFFEAWGNwithBWL(BasicAWGNwithBWL):
                  rx_filter_length, tx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
                  ffe_n_taps, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  print_interval=int(5e4), rrc_rolloff=0.5, lp_filter_type='bessel',
-                 lr_schedule='oneclr') -> None:
+                 lr_schedule='oneclr', use_surrogate_channel=False,
+                 surrogate_channel_kwargs: dict = {}) -> None:
         super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
@@ -861,7 +870,9 @@ class LinearFFEAWGNwithBWL(BasicAWGNwithBWL):
                          print_interval=print_interval,
                          rrc_rolloff=rrc_rolloff,
                          lp_filter_type=lp_filter_type,
-                         lr_schedule=lr_schedule)
+                         lr_schedule=lr_schedule,
+                         use_surrogate_channel=use_surrogate_channel,
+                         surrogate_channel_kwargs=surrogate_channel_kwargs)
 
     def get_equaliser_filter(self):
         return self.equaliser.filter.get_filter()
@@ -877,7 +888,7 @@ class BasicAWGNwithBWLandWDM(BasicAWGNwithBWL):
                  wdm_channel_spacing_hz, wdm_channel_selection_rel_cutoff,
                  equaliser_config: dict | None = None, tx_filter_init_type='dirac',
                  rx_filter_init_type='dirac', print_interval=int(50000), torch_seed=0,
-                 lp_filter_type='bessel', lr_schedule='oneclr', rrc_rolloff=0.5) -> None:
+                 lp_filter_type='bessel', lr_schedule='oneclr', rrc_rolloff=0.5) -> None:  # FIXME: I am here...
         super().__init__(sps, esn0_db, baud_rate, learning_rate, batch_size, constellation,
                          tx_filter_length, rx_filter_length, adc_bwl_relative_cutoff,
                          dac_bwl_relative_cutoff, learn_tx, learn_rx, equaliser_config,
@@ -1108,7 +1119,7 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
                  non_linear_coefficients=(0.95, 0.04, 0.01), isi_filter1=np.array([0.2, -0.1, 0.9, 0.3]),
                  isi_filter2=np.array([0.2, 0.9, 0.3]), tx_filter_init_type='rrc', rx_filter_init_type='rrc',
                  print_interval=int(5e4), use_brickwall=False, lr_schedule='oneclr',
-                 rrc_rolloff=0.5) -> None:
+                 rrc_rolloff=0.5, use_surrogate_channel=False, surrogate_channel_kwargs: dict = {}) -> None:
         super().__init__(sps=sps,
                          esn0_db=esn0_db,
                          baud_rate=baud_rate,
@@ -1116,7 +1127,9 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
                          batch_size=batch_size,
                          constellation=constellation,
                          print_interval=print_interval,
-                         lr_schedule=lr_schedule)
+                         lr_schedule=lr_schedule,
+                         use_surrogate_channel=use_surrogate_channel,
+                         surrogate_channel_kwargs=surrogate_channel_kwargs)
 
         # Define pulse shaper
         tx_filter_init = np.zeros((tx_filter_length,))
@@ -1210,13 +1223,15 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
         self.pulse_shaper.zero_grad()
         self.rx_filter.zero_grad()
 
-    def forward(self, symbols_up: torch.TensorType):
+    def forward_tx(self, x_syms_up: torch.TensorType) -> torch.TensorType:
         # Input is assumed to be upsampled sybmols
         # Apply pulse shaper
-        x = self.pulse_shaper.forward(symbols_up)
+        x = self.pulse_shaper.forward(x_syms_up)
+        return x
 
+    def forward_channel(self, tx_signal: torch.TensorType) -> torch.TensorType:
         # Normalize
-        x = x / self.normalization_constant
+        x = tx_signal / self.normalization_constant
 
         # Apply bandwidth limitation in the DAC
         x_lp = self.dac.forward(x)
@@ -1234,8 +1249,11 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
         # Apply bandwidth limitation in the ADC
         y_lp = self.adc.forward(y)
 
+        return y_lp
+
+    def forward_rx(self, y_channel: torch.TensorType) -> torch.TensorType:
         # Apply rx filter - applies stride inside filter (outputs sps = 1)
-        rx_filter_out = self.rx_filter.forward(y_lp)
+        rx_filter_out = self.rx_filter.forward(y_channel)
 
         # Power normalize and rescale to constellation
         rx_filter_out = rx_filter_out / torch.sqrt(torch.mean(torch.square(rx_filter_out))) * self.constellation_scale

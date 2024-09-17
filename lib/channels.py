@@ -5,6 +5,7 @@
 import torch
 import numpy as np
 from torch.fft import fft, ifft, fftfreq, fftshift
+from copy import deepcopy
 
 from .filtering import FIRfilter
 
@@ -79,16 +80,65 @@ class SingleModeFiber(object):
         return xo
 
 
+class WienerHammersteinChannel(torch.nn.Module):
+    """
+        Simple Wiener-Hammerstein system.
+        Two FIR filters with a polynomial sandwich between.
+        Polynomial order is fixed to three
+    """
+    def __init__(self, n_taps1: int, n_taps2: int, dtype=torch.float64):
+        super().__init__()
+
+        # Initialize FIR filters
+        h1 = np.zeros((n_taps1,))
+        h1[n_taps1 // 2] = 1.0  # dirac initialization
+        self.fir1 = FIRfilter(h1, stride=1, trainable=True, dtype=dtype)
+
+        h2 = np.zeros((n_taps2,))
+        h2[n_taps2 // 2] = 1.0  # dirac initialization
+        self.fir2 = FIRfilter(h2, stride=1, trainable=True, dtype=dtype)
+
+        # Polynomial coefficients - index 0 is bias
+        self.poly_coeffs = torch.nn.Parameter(torch.Tensor([0.0, 1.0, 0.0, 0.0]), requires_grad=True).to(dtype)
+    
+    def forward(self, x):
+        y1 = self.fir1.forward(x)
+        z = self.poly_coeffs[0] + self.poly_coeffs[1] * y1 + self.poly_coeffs[2] * y1**2 + self.poly_coeffs[3] * y1**3
+        return self.fir2.forward(z)
+    
+    def discard_samples(self):
+        return self.fir1.filter_length // 2 + self.fir2.filter_length // 2
+
+
 class SurrogateChannel(torch.nn.Module):
-    def __init__(self, n_taps, **kwargs):
-        super().__init__(**kwargs)
-        self.filter_length = n_taps
-        h = np.zeros((n_taps,))
-        h[n_taps // 2] = 1.0  # dirac initialization
-        self.channel_model = FIRfilter(h, stride=1, trainable=True)
+    """
+        Surrogate channel that estimates the channel response through a
+        non-differentiable channel of interest.
+        This enables backpropagation back to any transmitter parameters.
+    """
+    def __init__(self, **kwargs):
+        super().__init__()
+        local_kwarg_copy = deepcopy(kwargs)
+        self.surrogate_type = local_kwarg_copy.pop('type')
+
+        if self.surrogate_type.lower() == 'fir':
+            self.filter_length = local_kwarg_copy['n_taps']
+            h = np.zeros((local_kwarg_copy['n_taps'],))
+            h[local_kwarg_copy['n_taps'] // 2] = 1.0  # dirac initialization
+            self.channel_model = FIRfilter(h, stride=1, trainable=True)
+        elif self.surrogate_type.lower() == 'wh':
+            self.channel_model = WienerHammersteinChannel(**local_kwarg_copy)
+        else:
+            raise ValueError(f"Unknown surrogate channel model type: {self.surrogate_type}")    
     
     def forward(self, x):
         return self.channel_model.forward(x)
     
     def get_samples_discard(self):
-        return self.filter_length // 2
+        if self.surrogate_type.lower() == 'fir':
+            return self.filter_length // 2
+        elif self.surrogate_type.lower() == 'wh':
+            return self.channel_model.discard_samples()
+        else:
+            print(f"WARNING! Unknown channel model...")
+            return 0
