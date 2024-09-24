@@ -202,34 +202,59 @@ class LearnableTransmissionSystem(object):
     """
     def __init__(self, sps, esn0_db, baud_rate, learning_rate, batch_size, constellation,
                  lr_schedule='expdecay', eval_batch_size_in_syms=1000, print_interval=int(5e4),
-                 gradient_norm_clipping=True, use_surrogate_channel=False, surrogate_channel_kwargs: dict = {}) -> None:
+                 tx_optimizer_params: dict | None = None, tx_multi_channel=False) -> None:
         self.esn0_db = esn0_db
         self.baud_rate = baud_rate
-        self.learning_rate = learning_rate  # learning rate of optimizer
         self.sps = sps  # samples pr symbol
         self.sym_length = 1 / self.baud_rate  # length of one symbol in seconds
         self.Ts = self.sym_length / self.sps  # effective sampling interval
         self.batch_size = batch_size
+        self.learning_rate = learning_rate  # learning rate used in the main Adam optmizer (default used for Rx)
+        self.lr_schedule = lr_schedule
         self.eval_batch_size = eval_batch_size_in_syms * self.sps  # FIXME: Expose to all the classes
         self.batch_print_interval = print_interval / self.batch_size
-        self.optimizer = None
         self.constellation = constellation
-        self.lr_schedule = lr_schedule
-        self.use_gradient_norm_clipping = gradient_norm_clipping
-        self.use_surrogate_channel = use_surrogate_channel
+        self.tx_multi_channel = tx_multi_channel
+        self.optimizer = None
 
-        if use_surrogate_channel:
-            self.channel_loss_weight = surrogate_channel_kwargs.pop('channel_loss_weight', 10.0)  # TODO: default value based on minimal experimentation
-            self.surrogate_channel = SurrogateChannel(**surrogate_channel_kwargs)
+        # Select optimization framework to use for the Tx
+        self.optimize_method_funcp = self._optimize_backprop_funcp  # default is backprop
+        if tx_optimizer_params:
+            self.tx_optimizer_type = tx_optimizer_params.pop('type', 'backprop')
+            if self.tx_optimizer_type.lower() == 'backprop':
+                # Standard "backprop" uses the same 
+                # Assumes that we can differentiate through the channel
+                self.use_gradient_norm_clipping = tx_optimizer_params.pop('gradient_norm_clipping', True)
+            elif self.tx_optimizer_type.lower() == 'surrogate':
+                # Differentiable surrogate channel (DSC) (cf. Niu et al. 2022, JLT, DOI: 10.1109/JLT.2022.3148270)
+                self.optimize_method_funcp = self._optimize_surrogate_funcp
+                self.surrogate_learning_rate = tx_optimizer_params.pop('learning_rate', self.learning_rate)  # learning rate surrogate optimizer
+                self.surrogate_lr_schedule = tx_optimizer_params.pop('lr_schedule', 'expdecay')
+                self.use_gradient_norm_clipping = tx_optimizer_params.pop('gradient_norm_clipping', True)
+                self.surrogate_channel = SurrogateChannel(multi_channel=tx_multi_channel, **tx_optimizer_params['surrogate_channel_kwargs'])
+                self.surrogate_optimizer = torch.optim.Adam([{"params": self.surrogate_channel.parameters()}],
+                                                            lr=self.surrogate_learning_rate)
+            elif self.tx_optimizer_type.lower() == 'cma-es':
+                # Update with covariance matrix adaptation (use pycma package?)
+                raise NotImplementedError
+            else:
+                raise ValueError(f"Unknown optimizer type: '{self.tx_optimizer_type}'")
+        else:
+            # If no tx optimizer params are specified, assume vanilla backprop.
+            self.tx_optimizer_type = 'backprop'
+            self.use_gradient_norm_clipping = True
+        
+        # FIXME: Verify that all methods work after new base class structure...
+        # FIXME: Pytest...
+        # FIXME: Assume that we can always update the Rx side with backprop...?
 
     def print_system_info(self):
         # FIXME
         pass
 
     def initialize_optimizer(self):
+        # TODO: When implementing CMA-ES - how to not return the Tx parameters? (as they should not be part of the Adam optimizer)
         params = self.get_parameters()
-        if self.use_surrogate_channel:
-            params += [{"params": self.surrogate_channel.parameters()}]
         self.optimizer = torch.optim.Adam(params, lr=self.learning_rate)
 
     def set_esn0_db(self, new_esn0_db):
@@ -239,21 +264,20 @@ class LearnableTransmissionSystem(object):
         raise NotImplementedError
 
     def get_parameters(self):
+        # TODO: Split this method in two "children" methods get_tx_parameters(), get_rx_parameters()
         raise NotImplementedError
 
     def zero_gradients(self):
+        # FIXME: Fully remove this method and use optimizer's zero_grad().
         raise NotImplementedError
 
     def calculate_loss(self, tx_syms: torch.TensorType, rx_syms: torch.TensorType):
         raise NotImplementedError
     
-    def calculate_channel_loss(self, y_pred: torch.TensorType, y_true: torch.TensorType, channel_delay: int = 0):
+    def calculate_surrogate_loss(self, y_pred: torch.TensorType, y_true: torch.TensorType):
         discard_samples = self.surrogate_channel.get_samples_discard()
-        return torch.mean(torch.square(torch.subtract(torch.roll(y_pred, -channel_delay)[discard_samples:-discard_samples],
+        return torch.mean(torch.square(torch.subtract(y_pred[discard_samples:-discard_samples],
                                                       y_true[discard_samples:-discard_samples])))
-
-    def get_channel_delay(self):
-        raise NotImplementedError
 
     def get_esn0_db(self):
         return self.esn0_db
@@ -287,6 +311,7 @@ class LearnableTransmissionSystem(object):
         return torch.sqrt(n0)
 
     def update_model(self, loss):
+        # TODO: Make more elaborate/specific for the different methods...
         loss.backward()
 
         if not self.optimizer:
@@ -301,31 +326,43 @@ class LearnableTransmissionSystem(object):
 
         # Take gradient step.
         self.optimizer.step()
+    
+    def create_lr_schedule(self, optimizer, lr_schedule_str, n_symbols, learning_rate):
+        if lr_schedule_str == 'oneclr':
+            lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer,
+                                                               max_lr=10 * learning_rate,
+                                                               steps_per_epoch=1,
+                                                               epochs=n_symbols // self.batch_size)
+        elif lr_schedule_str == 'expdecay':
+            lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer,
+                                                                  gamma=0.99)
+        elif lr_schedule_str == 'multistep':
+            lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,
+                                                                milestones=[int(0.5*n_symbols // self.batch_size),
+                                                                            int(0.9*n_symbols // self.batch_size)],
+                                                                gamma=0.1)
+        else:
+            raise ValueError(f"Unknown supplied learning rate scheduler: {lr_schedule_str}")
+        
+        return lr_scheduler
+
 
     def optimize(self, symbols: npt.ArrayLike, return_loss=False):
+        loss_array = self.optimize_method_funcp(symbols)
+        if return_loss:
+            return loss_array
+        
+    def _optimize_backprop_funcp(self, symbols: npt.ArrayLike):
         symbols_up = np.zeros(self.sps * len(symbols), dtype=symbols.dtype)
         symbols_up[0::self.sps] = symbols
 
-        if return_loss:
-            loss_per_batch = np.empty((len(symbols) // self.batch_size, ), dtype=np.float64)
+        loss_per_batch = np.empty((len(symbols) // self.batch_size, ), dtype=np.float64)
 
         # Create learning rate scheduler
         if self.lr_schedule:
-            if self.lr_schedule == 'oneclr':
-                lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(self.optimizer,
-                                                                max_lr=10 * self.learning_rate,
-                                                                steps_per_epoch=1,
-                                                                epochs=len(symbols) // self.batch_size)
-            elif self.lr_schedule == 'expdecay':
-                lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optimizer,
-                                                                      gamma=0.99)
-            elif self.lr_schedule == 'multistep':
-                lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(self.optimizer,
-                                                                    milestones=[int(0.5*len(symbols) // self.batch_size),
-                                                                                int(0.9*len(symbols) // self.batch_size)],
-                                                                    gamma=0.1)
-            else:
-                raise ValueError(f"Unknown supplied learning rate scheduler: {self.lr_schedule}")
+            lr_scheduler = self.create_lr_schedule(self.optimizer, lr_schedule_str=self.lr_schedule,
+                                                   n_symbols=len(symbols), learning_rate=self.learning_rate)
+            
 
         for b in range(len(symbols) // self.batch_size):
             # Zero gradients
@@ -337,21 +374,12 @@ class LearnableTransmissionSystem(object):
             tx_syms_up = torch.from_numpy(this_a_up)
 
             # Run upsampled symbols through system forward model - return symbols at Rx
-            tx  = self.forward_tx(tx_syms_up)
-            if self.use_surrogate_channel:
-                # FIXME: Multiple steps pr. batch?
-                ychan = self.surrogate_channel.forward(tx)
-                with torch.no_grad():
-                    ychan_true = self.forward_channel(tx)
-                rx_out = self.forward_rx(ychan_true)
-            else:
-                ychan = self.forward_channel(tx)
-                rx_out = self.forward_rx(ychan)
+            tx = self.forward_tx(tx_syms_up)
+            ychan = self.forward_channel(tx)
+            rx_out = self.forward_rx(ychan)
 
             # Calculate loss
             loss = self.calculate_loss(target, rx_out)
-            if self.use_surrogate_channel:
-                loss += self.channel_loss_weight * self.calculate_channel_loss(ychan, ychan_true, channel_delay=0)  # FIXME: self.get_channel_delay()
 
             # Update model using backpropagation
             self.update_model(loss)
@@ -364,15 +392,87 @@ class LearnableTransmissionSystem(object):
             if b % self.batch_print_interval == 0:
                 print(f"Batch {b} (# symbols {b * self.batch_size:.2e}) - Loss: {loss.item():.3f} - LR: {this_lr:.2e}")
 
-            if return_loss:
-                loss_per_batch[b] = loss.item()
+            loss_per_batch[b] = loss.item()
 
             if torch.isnan(loss):
                 print("Detected loss to be nan. Terminate training...")
                 break
 
-        if return_loss:
-            return loss_per_batch
+        return loss_per_batch
+    
+    def _optimize_surrogate_funcp(self, symbols: npt.ArrayLike):
+        symbols_up = np.zeros(self.sps * len(symbols), dtype=symbols.dtype)
+        symbols_up[0::self.sps] = symbols
+
+        loss_per_batch = np.empty((len(symbols) // self.batch_size, ), dtype=np.float64)
+
+        # Create learning rate scheduler
+        if self.lr_schedule:
+            lr_scheduler = self.create_lr_schedule(self.optimizer, lr_schedule_str=self.lr_schedule,
+                                                   n_symbols=len(symbols), learning_rate=self.learning_rate)
+            
+        if self.surrogate_lr_schedule:
+            surrogate_lr_scheduler = self.create_lr_schedule(self.surrogate_optimizer, lr_schedule_str=self.surrogate_lr_schedule,
+                                                   n_symbols=len(symbols), learning_rate=self.surrogate_learning_rate)
+            surrogate_lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(self.surrogate_optimizer,
+                                                                            gamma=0.99)
+
+        for b in range(len(symbols) // self.batch_size):
+            # Zero gradients
+            self.zero_gradients()
+
+            # Slice out batch and create tensors
+            this_a_up = symbols_up[b * self.batch_size * self.sps:(b * self.batch_size * self.sps + self.batch_size * self.sps)]
+            target = torch.from_numpy(symbols[b * self.batch_size:(b * self.batch_size + self.batch_size)])
+            tx_syms_up = torch.from_numpy(this_a_up)
+
+            # Run upsampled symbols through system forward model - return symbols at Rx
+            loss = 0.0
+            # First take a gradient step on the surrogate model
+            self.surrogate_optimizer.zero_grad(set_to_none=True)
+            with torch.no_grad():
+                tx = self.forward_tx(tx_syms_up)
+                ychan_true = self.forward_channel(tx)
+            ychan = self.surrogate_channel.forward(tx)
+            surrogate_loss = self.calculate_surrogate_loss(ychan, ychan_true)
+            surrogate_loss.backward()
+            self.surrogate_optimizer.step()
+
+            # Then use the surrogate for updating the Tx params
+            tx = self.forward_tx(tx_syms_up)
+            ychan = self.surrogate_channel.forward(tx)
+            rx_out_surrogate = self.forward_rx(ychan)
+            loss += self.calculate_loss(target, rx_out_surrogate)
+            
+            # Furthermore, add the "Rx-only-loss" that uses the real-channel
+            # (calculated below)
+            rx_out = self.forward_rx(ychan_true)
+
+            # Calculate loss
+            loss += self.calculate_loss(target, rx_out)
+
+            # Update model using backpropagation
+            self.update_model(loss)
+
+            # Update stepsizes according to schedule
+            this_lr = self.optimizer.param_groups[-1]['lr']
+            if self.lr_schedule:
+                lr_scheduler.step()
+                this_lr = lr_scheduler.get_last_lr()[0]
+
+            if self.surrogate_lr_schedule:
+                surrogate_lr_scheduler.step()
+
+            if b % self.batch_print_interval == 0:
+                print(f"Batch {b} (# symbols {b * self.batch_size:.2e}) - Loss: {loss.item():.3f} - LR: {this_lr:.2e}")
+
+            loss_per_batch[b] = loss.item()
+
+            if torch.isnan(loss):
+                print("Detected loss to be nan. Terminate training...")
+                break
+
+        return loss_per_batch
 
     def evaluate(self, symbols: npt.ArrayLike, **eval_config):
         # Upsample
@@ -392,7 +492,8 @@ class BasicAWGN(LearnableTransmissionSystem):
     """
     def __init__(self, sps, esn0_db, baud_rate, learning_rate, batch_size, constellation, learn_tx: bool, learn_rx: bool, print_interval=int(5e4),
                  normalize_after_tx=True, tx_filter_length=45, rx_filter_length=45,
-                 tx_filter_init_type='dirac', rx_filter_init_type='dirac', rrc_rolloff=0.5, lr_schedule='oneclr') -> None:
+                 tx_filter_init_type='dirac', rx_filter_init_type='dirac', rrc_rolloff=0.5, lr_schedule='oneclr',
+                 tx_optimizer_params: dict | None = None) -> None:
         super().__init__(sps=sps,
                          esn0_db=esn0_db,
                          baud_rate=baud_rate,
@@ -400,7 +501,8 @@ class BasicAWGN(LearnableTransmissionSystem):
                          batch_size=batch_size,
                          constellation=constellation,
                          print_interval=print_interval,
-                         lr_schedule=lr_schedule)
+                         lr_schedule=lr_schedule,
+                         tx_optimizer_params=tx_optimizer_params)
 
         # Define pulse shaper
         tx_filter_init = np.zeros((tx_filter_length,))
@@ -450,22 +552,26 @@ class BasicAWGN(LearnableTransmissionSystem):
         self.pulse_shaper.zero_grad()
         self.rx_filter.zero_grad()
 
-    def forward(self, symbols_up: torch.TensorType):
+    def forward_tx(self, x_syms_up: torch.TensorType):
         # Input is assumed to be upsampled sybmols
         # Apply pulse shaper
-        x = self.pulse_shaper.forward(symbols_up)
+        x = self.pulse_shaper.forward(x_syms_up)
 
         # Normalize (if self.normalization_after_tx is set, else norm_constant = 1.0)
         x = x / self.normalization_constant
-
-        # Add white noise based on desired EsN0
+        return x
+    
+    def forward_channel(self, tx_signal: torch.TensorType) -> torch.TensorType:
+         # Add white noise based on desired EsN0
         with torch.no_grad():
-            noise_std = self.calculate_noise_std(x)
+            noise_std = self.calculate_noise_std(tx_signal)
 
-        y = x + noise_std * torch.randn(x.shape)
+        y = tx_signal + noise_std * torch.randn(tx_signal.shape)
+        return y
 
+    def forward_rx(self, y_channel: torch.TensorType) -> torch.TensorType:
         # Apply rx filter
-        rx_filter_out = self.rx_filter.forward(y)
+        rx_filter_out = self.rx_filter.forward(y_channel)
 
         # Rescale to constellation (if self.normalization_after_tx is set)
         if self.normalize_after_tx:
@@ -518,7 +624,8 @@ class PulseShapingAWGN(BasicAWGN):
     """
     def __init__(self, sps, esn0_db, baud_rate, constellation, batch_size, learning_rate, tx_filter_length,
                  rx_filter_length, print_interval=int(50000), rrc_rolloff=0.5,
-                 normalize_after_tx=True, filter_init_type='dirac', lr_schedule='oneclr') -> None:
+                 normalize_after_tx=True, filter_init_type='dirac', lr_schedule='oneclr',
+                 tx_optimizer_params: dict | None = None) -> None:
         super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          learning_rate=learning_rate, batch_size=batch_size,
                          constellation=constellation,
@@ -530,7 +637,8 @@ class PulseShapingAWGN(BasicAWGN):
                          normalize_after_tx=normalize_after_tx,
                          tx_filter_init_type=filter_init_type,
                          rx_filter_init_type='rrc',
-                         lr_schedule=lr_schedule)
+                         lr_schedule=lr_schedule,
+                         tx_optimizer_params=tx_optimizer_params)
 
 
 class RxFilteringAWGN(BasicAWGN):
@@ -539,19 +647,21 @@ class RxFilteringAWGN(BasicAWGN):
     """
     def __init__(self, sps, esn0_db, baud_rate, constellation, batch_size, learning_rate, rx_filter_length,
                  tx_filter_length, print_interval=int(50000), rrc_rolloff=0.5,
-                 normalize_after_tx=True, filter_init_type='dirac', lr_schedule='oneclr') -> None:
+                 normalize_after_tx=True, filter_init_type='dirac', lr_schedule='oneclr',
+                 tx_optimizer_params: dict | None = None) -> None:
         super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          learning_rate=learning_rate, batch_size=batch_size,
                          constellation=constellation,
                          learn_tx=False, learn_rx=True,
-                         tx_filter_length=tx_filter_length,  # filter length controlled by RRC
+                         tx_filter_length=tx_filter_length,
                          rx_filter_length=rx_filter_length,
                          print_interval=print_interval,
                          rrc_rolloff=rrc_rolloff,
                          normalize_after_tx=normalize_after_tx,
                          rx_filter_init_type=filter_init_type,
                          tx_filter_init_type='rrc',
-                         lr_schedule=lr_schedule)
+                         lr_schedule=lr_schedule,
+                         tx_optimizer_params=tx_optimizer_params)
 
 
 class BasicAWGNwithBWL(LearnableTransmissionSystem):
@@ -564,8 +674,8 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
                  dac_bwl_relative_cutoff, learn_tx: bool, learn_rx: bool, equaliser_config: dict | None = None,
                  tx_filter_init_type='dirac', rx_filter_init_type='dirac',
                  print_interval=int(5e4), lp_filter_type='bessel', lr_schedule='oneclr',
-                 rrc_rolloff=0.5, tx_multi_channel: bool = False, use_surrogate_channel=False,
-                 surrogate_channel_kwargs: dict = {}) -> None:
+                 rrc_rolloff=0.5, tx_multi_channel: bool = False,
+                 tx_optimizer_params: dict | None = None) -> None:
         super().__init__(sps=sps,
                          esn0_db=esn0_db,
                          baud_rate=baud_rate,
@@ -574,8 +684,8 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
                          constellation=constellation,
                          print_interval=print_interval,
                          lr_schedule=lr_schedule,
-                         use_surrogate_channel=use_surrogate_channel,
-                         surrogate_channel_kwargs=surrogate_channel_kwargs)
+                         tx_optimizer_params=tx_optimizer_params,
+                         tx_multi_channel=tx_multi_channel)
 
         # Define pulse shaper
         tx_filter_init = np.zeros((tx_filter_length,))
@@ -658,9 +768,6 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         # Total symbol delay introduced by the two LPFs
         self.channel_delay_in_syms = int(np.ceil((self.adc.get_sample_delay() + self.dac.get_sample_delay())/self.sps))
         print(f"Channel delay is {self.channel_delay_in_syms} [symbols]")
-
-    def get_channel_delay(self):
-        return int(np.ceil((self.adc.get_sample_delay() + self.dac.get_sample_delay())))
 
     def get_parameters(self):
         params_to_return = []
@@ -745,7 +852,8 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         return rx_eq_out
 
     def calculate_loss(self, tx_syms: torch.TensorType, rx_syms: torch.TensorType):
-        return torch.mean(torch.square(tx_syms[self.discard_per_batch:-self.discard_per_batch] - torch.roll(rx_syms, -self.channel_delay_in_syms)[self.discard_per_batch:-self.discard_per_batch]))
+        return torch.mean(torch.square(torch.subtract(tx_syms[self.discard_per_batch:-self.discard_per_batch],
+                                                      torch.roll(rx_syms, -self.channel_delay_in_syms)[self.discard_per_batch:-self.discard_per_batch])))
 
     def update_model(self, loss):
         super().update_model(loss)
@@ -768,8 +876,8 @@ class PulseShapingAWGNwithBWL(BasicAWGNwithBWL):
                  tx_filter_length, rx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
                  filter_init_type='dirac', print_interval=int(5e4), rrc_rolloff=0.5,
                  lp_filter_type='bessel', lr_schedule='oneclr',
-                 use_surrogate_channel=False, surrogate_channel_kwargs: dict = {}) -> None:
-        super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
+                 tx_optimizer_params: dict | None = None) -> None:
+        super().__init__(sps=sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                          learning_rate=learning_rate,
@@ -783,8 +891,7 @@ class PulseShapingAWGNwithBWL(BasicAWGNwithBWL):
                          rrc_rolloff=rrc_rolloff,
                          lp_filter_type=lp_filter_type,
                          lr_schedule=lr_schedule,
-                         use_surrogate_channel=use_surrogate_channel,
-                         surrogate_channel_kwargs=surrogate_channel_kwargs)
+                         tx_optimizer_params=tx_optimizer_params)
 
 
 class RxFilteringAWGNwithBWL(BasicAWGNwithBWL):
@@ -794,9 +901,8 @@ class RxFilteringAWGNwithBWL(BasicAWGNwithBWL):
     def __init__(self, sps, esn0_db, baud_rate, constellation, batch_size, learning_rate,
                  rx_filter_length, tx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
                  filter_init_type='dirac', print_interval=int(5e4), rrc_rolloff=0.5,
-                 lp_filter_type='bessel', lr_schedule='oneclr',
-                 use_surrogate_channel=False, surrogate_channel_kwargs: dict = {}) -> None:
-        super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
+                 lp_filter_type='bessel', lr_schedule='oneclr') -> None:
+        super().__init__(sps=sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                          learning_rate=learning_rate,
@@ -811,8 +917,7 @@ class RxFilteringAWGNwithBWL(BasicAWGNwithBWL):
                          rrc_rolloff=rrc_rolloff,
                          lp_filter_type=lp_filter_type,
                          lr_schedule=lr_schedule,
-                         use_surrogate_channel=use_surrogate_channel,
-                         surrogate_channel_kwargs=surrogate_channel_kwargs)
+                         tx_optimizer_params=None)  # not optimizing the Tx
 
 
 class JointTxRxAWGNwithBWL(BasicAWGNwithBWL):
@@ -824,8 +929,8 @@ class JointTxRxAWGNwithBWL(BasicAWGNwithBWL):
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  print_interval=int(5e4), rrc_rolloff=0.5,
                  lp_filter_type='bessel', lr_schedule='oneclr',
-                 use_surrogate_channel=False, surrogate_channel_kwargs: dict = {}) -> None:
-        super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
+                 tx_optimizer_params: dict | None = None) -> None:
+        super().__init__(sps=sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                          learning_rate=learning_rate,
@@ -840,8 +945,7 @@ class JointTxRxAWGNwithBWL(BasicAWGNwithBWL):
                          rrc_rolloff=rrc_rolloff,
                          lp_filter_type=lp_filter_type,
                          lr_schedule=lr_schedule,
-                         use_surrogate_channel=use_surrogate_channel,
-                         surrogate_channel_kwargs=surrogate_channel_kwargs)
+                         tx_optimizer_params=tx_optimizer_params)
 
 
 class LinearFFEAWGNwithBWL(BasicAWGNwithBWL):
@@ -853,9 +957,8 @@ class LinearFFEAWGNwithBWL(BasicAWGNwithBWL):
                  rx_filter_length, tx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
                  ffe_n_taps, rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  print_interval=int(5e4), rrc_rolloff=0.5, lp_filter_type='bessel',
-                 lr_schedule='oneclr', use_surrogate_channel=False,
-                 surrogate_channel_kwargs: dict = {}) -> None:
-        super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
+                 lr_schedule='oneclr') -> None:
+        super().__init__(sps=sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                          learning_rate=learning_rate,
@@ -871,8 +974,7 @@ class LinearFFEAWGNwithBWL(BasicAWGNwithBWL):
                          rrc_rolloff=rrc_rolloff,
                          lp_filter_type=lp_filter_type,
                          lr_schedule=lr_schedule,
-                         use_surrogate_channel=use_surrogate_channel,
-                         surrogate_channel_kwargs=surrogate_channel_kwargs)
+                         tx_optimizer_params=None)  # not optimizing the transmitter
 
     def get_equaliser_filter(self):
         return self.equaliser.filter.get_filter()
@@ -881,6 +983,11 @@ class LinearFFEAWGNwithBWL(BasicAWGNwithBWL):
 class BasicAWGNwithBWLandWDM(BasicAWGNwithBWL):
     """
         Bandwidth limited AWGN channel with wavelength division multiplexing (WDM)
+
+        TODO: How to integrate surrogate model in WDM? How much should it model?
+        WIP... 
+         - Only model the channel of interest? (How to structure that in code?)
+         - MultiChannel input, single output?
     """
     def __init__(self, sps, esn0_db, baud_rate, learning_rate, batch_size, constellation,
                  tx_filter_length: int, rx_filter_length: int, adc_bwl_relative_cutoff,
@@ -888,12 +995,25 @@ class BasicAWGNwithBWLandWDM(BasicAWGNwithBWL):
                  wdm_channel_spacing_hz, wdm_channel_selection_rel_cutoff,
                  equaliser_config: dict | None = None, tx_filter_init_type='dirac',
                  rx_filter_init_type='dirac', print_interval=int(50000), torch_seed=0,
-                 lp_filter_type='bessel', lr_schedule='oneclr', rrc_rolloff=0.5) -> None:  # FIXME: I am here...
-        super().__init__(sps, esn0_db, baud_rate, learning_rate, batch_size, constellation,
-                         tx_filter_length, rx_filter_length, adc_bwl_relative_cutoff,
-                         dac_bwl_relative_cutoff, learn_tx, learn_rx, equaliser_config,
-                         tx_filter_init_type, rx_filter_init_type, print_interval,
-                         lp_filter_type, lr_schedule, rrc_rolloff, tx_multi_channel=True)
+                 lp_filter_type='bessel', lr_schedule='oneclr', rrc_rolloff=0.5,
+                 tx_optimizer_params: dict | None = None) -> None:
+        super().__init__(sps=sps, esn0_db=esn0_db, baud_rate=baud_rate,
+                         learning_rate=learning_rate, batch_size=batch_size,
+                         constellation=constellation,
+                         tx_filter_length=tx_filter_length,
+                         rx_filter_length=rx_filter_length,
+                         adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
+                         dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
+                         learn_tx=learn_tx, learn_rx=learn_rx,
+                         equaliser_config=equaliser_config,
+                         tx_filter_init_type=tx_filter_init_type,
+                         rx_filter_init_type=rx_filter_init_type,
+                         print_interval=print_interval,
+                         lp_filter_type=lp_filter_type,
+                         lr_schedule=lr_schedule,
+                         rrc_rolloff=rrc_rolloff,
+                         tx_multi_channel=True,
+                         tx_optimizer_params=tx_optimizer_params)
 
         self.wdm_n_channels = 3  # always three channels during training
         self.wdm_channel_spacing_hz = wdm_channel_spacing_hz
@@ -904,22 +1024,25 @@ class BasicAWGNwithBWLandWDM(BasicAWGNwithBWL):
                                                          order=5,
                                                          Fs=1/self.Ts)
 
-    def forward(self, symbols_up: torch.TensorType):
+    def forward_tx(self, x_syms_up: torch.TensorType) -> torch.TensorType:
         # Prepare WDM channel
         rng_gen = torch.random.manual_seed(self.torch_seed)
-        channel_fq_grid = torch.Tensor([-1.0, 0.0, 1.0]) * self.wdm_channel_spacing_hz
-
-        symbols_up_chan = torch.stack((permute_symbols(symbols_up, self.sps, rng_gen),
-                                       symbols_up,
-                                       permute_symbols(symbols_up, self.sps, rng_gen)), dim=1)
+        symbols_up_chan = torch.stack((permute_symbols(x_syms_up, self.sps, rng_gen),
+                                       x_syms_up,
+                                       permute_symbols(x_syms_up, self.sps, rng_gen)), dim=1)
 
         # Apply same pulse shaper to all channels (MultiChannelFIRfilter)
         x = self.pulse_shaper.forward(symbols_up_chan)
         x = x / self.normalization_constant
 
-        # Apply bandwidth limitation in the DAC (multi-channel as well)
-        x_lp = self.dac.forward(x)
+        return x
 
+    def forward_channel(self, tx_signal: torch.TensorType) -> torch.TensorType:
+        # Apply bandwidth limitation in the DAC (multi-channel as well)
+        x_lp = self.dac.forward(tx_signal)
+
+        # Create WDM signal
+        channel_fq_grid = torch.Tensor([-1.0, 0.0, 1.0]) * self.wdm_channel_spacing_hz
         tx_wdm = torch.sum(x_lp * torch.exp(1j * 2 * torch.pi * (channel_fq_grid[None, :] * self.Ts) * torch.arange(0, x_lp.shape[0], dtype=torch.float64)[:, None]), dim=1)
 
         with torch.no_grad():
@@ -931,9 +1054,12 @@ class BasicAWGNwithBWLandWDM(BasicAWGNwithBWL):
 
         # Apply bandwidth limitation in the ADC
         y_lp = self.adc.forward(y_chan)
+        
+        return y_lp
 
+    def forward_rx(self, y_channel: torch.TensorType) -> torch.TensorType:
         # Apply rx filter - applies stride inside filter (outputs sps = 1, if no equaliser)
-        rx_filter_out = self.rx_filter.forward(y_lp)
+        rx_filter_out = self.rx_filter.forward(y_channel)
 
         # Apply equaliser
         rx_eq_out = self.equaliser.forward(rx_filter_out)
@@ -994,7 +1120,8 @@ class PulseShapingAWGNwithBWLandWDM(BasicAWGNwithBWLandWDM):
                  tx_filter_length, rx_filter_length, adc_bwl_relative_cutoff, dac_bwl_relative_cutoff,
                  wdm_channel_spacing_hz, wdm_channel_selection_rel_cutoff,
                  filter_init_type='dirac', print_interval=int(5e4), rrc_rolloff=0.5,
-                 lp_filter_type='bessel', lr_schedule='oneclr') -> None:
+                 lp_filter_type='bessel', lr_schedule='oneclr',
+                 tx_optimizer_params: dict | None = None) -> None:
         super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
@@ -1010,7 +1137,8 @@ class PulseShapingAWGNwithBWLandWDM(BasicAWGNwithBWLandWDM):
                          print_interval=print_interval,
                          rrc_rolloff=rrc_rolloff,
                          lp_filter_type=lp_filter_type,
-                         lr_schedule=lr_schedule)
+                         lr_schedule=lr_schedule,
+                         tx_optimizer_params=tx_optimizer_params)
 
 
 class RxFilteringAWGNwithBWLandWDM(BasicAWGNwithBWLandWDM):
@@ -1038,7 +1166,8 @@ class RxFilteringAWGNwithBWLandWDM(BasicAWGNwithBWLandWDM):
                          print_interval=print_interval,
                          rrc_rolloff=rrc_rolloff,
                          lp_filter_type=lp_filter_type,
-                         lr_schedule=lr_schedule)
+                         lr_schedule=lr_schedule,
+                         tx_optimizer_params=None)
 
 
 class JointTxRxAWGNwithBWLandWDM(BasicAWGNwithBWLandWDM):
@@ -1050,7 +1179,8 @@ class JointTxRxAWGNwithBWLandWDM(BasicAWGNwithBWLandWDM):
                  wdm_channel_spacing_hz, wdm_channel_selection_rel_cutoff,
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  print_interval=int(5e4), rrc_rolloff=0.5,
-                 lp_filter_type='bessel', lr_schedule='oneclr') -> None:
+                 lp_filter_type='bessel', lr_schedule='oneclr',
+                 tx_optimizer_params: dict | None = None) -> None:
         super().__init__(sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff,
                          dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
@@ -1067,7 +1197,8 @@ class JointTxRxAWGNwithBWLandWDM(BasicAWGNwithBWLandWDM):
                          print_interval=print_interval,
                          rrc_rolloff=rrc_rolloff,
                          lp_filter_type=lp_filter_type,
-                         lr_schedule=lr_schedule)
+                         lr_schedule=lr_schedule,
+                         tx_optimizer_params=tx_optimizer_params)
 
 
 class LinearFFEAWGNwithBWLandWDM(BasicAWGNwithBWLandWDM):
@@ -1098,7 +1229,8 @@ class LinearFFEAWGNwithBWLandWDM(BasicAWGNwithBWLandWDM):
                          print_interval=print_interval,
                          rrc_rolloff=rrc_rolloff,
                          lp_filter_type=lp_filter_type,
-                         lr_schedule=lr_schedule)
+                         lr_schedule=lr_schedule,
+                         tx_optimizer_params=None)
 
     def get_equaliser_filter(self):
         return self.equaliser.filter.get_filter()
@@ -1118,8 +1250,8 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
                  dac_bwl_relative_cutoff, learn_tx: bool, learn_rx: bool, tx_filter_length: int, rx_filter_length: int,
                  non_linear_coefficients=(0.95, 0.04, 0.01), isi_filter1=np.array([0.2, -0.1, 0.9, 0.3]),
                  isi_filter2=np.array([0.2, 0.9, 0.3]), tx_filter_init_type='rrc', rx_filter_init_type='rrc',
-                 print_interval=int(5e4), use_brickwall=False, lr_schedule='oneclr',
-                 rrc_rolloff=0.5, use_surrogate_channel=False, surrogate_channel_kwargs: dict = {}) -> None:
+                 print_interval=int(5e4), lp_filter_type='bessel', lr_schedule='oneclr',
+                 rrc_rolloff=0.5, tx_optimizer_params: dict | None = None) -> None:
         super().__init__(sps=sps,
                          esn0_db=esn0_db,
                          baud_rate=baud_rate,
@@ -1128,8 +1260,7 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
                          constellation=constellation,
                          print_interval=print_interval,
                          lr_schedule=lr_schedule,
-                         use_surrogate_channel=use_surrogate_channel,
-                         surrogate_channel_kwargs=surrogate_channel_kwargs)
+                         tx_optimizer_params=tx_optimizer_params)
 
         # Define pulse shaper
         tx_filter_init = np.zeros((tx_filter_length,))
@@ -1143,6 +1274,7 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
             g = g / np.linalg.norm(g)
             tx_filter_init = g
 
+        # TODO: Implement WDM for this NonLinearISI channel
         self.pulse_shaper = FIRfilter(filter_weights=tx_filter_init, trainable=learn_tx)
 
         # Define rx filter - downsample to 1 sps as part of convolution (stride)
@@ -1165,19 +1297,22 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
         # Digital-to-analog (DAC) converter
         self.dac = AllPassFilter()
         if dac_bwl_relative_cutoff is not None:
-            if use_brickwall:
-                self.dac = BrickWallFilter(filter_length=512, cutoff_hz=info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
-            else:
+            if lp_filter_type == 'fir':
+                self.dac = LowPassFIR(num_taps=5, cutoff_hz=info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
+            elif lp_filter_type == 'bessel':
                 self.dac = BesselFilter(bessel_order=5, cutoff_hz=info_bw * dac_bwl_relative_cutoff, fs=1/self.Ts)
+            else:
+                raise ValueError(f"Unknown low-pass filter type: {lp_filter_type}")
 
         # Analog-to-digial (ADC) converter
         self.adc = AllPassFilter()
-
         if adc_bwl_relative_cutoff is not None:
-            if use_brickwall:
-                self.adc = BrickWallFilter(filter_length=512, cutoff_hz=info_bw * adc_bwl_relative_cutoff, fs=1/self.Ts)
-            else:
+            if lp_filter_type == 'fir':
+                self.adc = LowPassFIR(num_taps=5, cutoff_hz=info_bw * adc_bwl_relative_cutoff, fs=1/self.Ts)
+            elif lp_filter_type == 'bessel':
                 self.adc = BesselFilter(bessel_order=5, cutoff_hz=info_bw * adc_bwl_relative_cutoff, fs=1/self.Ts)
+            else:
+                raise ValueError(f"Unknown low-pass filter type: {lp_filter_type}")
 
         # Add parameters for non-linear channel
         # ISI transfer functions are assumed to be in "symbol"-domain, i.e. how much two neighbouring symbols interfere
@@ -1227,14 +1362,15 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
         # Input is assumed to be upsampled sybmols
         # Apply pulse shaper
         x = self.pulse_shaper.forward(x_syms_up)
+        
+        # Normalize
+        x = x / self.normalization_constant
+
         return x
 
     def forward_channel(self, tx_signal: torch.TensorType) -> torch.TensorType:
-        # Normalize
-        x = tx_signal / self.normalization_constant
-
         # Apply bandwidth limitation in the DAC
-        x_lp = self.dac.forward(x)
+        x_lp = self.dac.forward(tx_signal)
 
         # Apply non-linearity - FIR + non linear + FIR
         x_nl = self.isi_filter1.forward(x_lp)
@@ -1322,8 +1458,9 @@ class PulseShapingNonLinearISIChannel(NonLinearISIChannel):
                  tx_filter_length, rx_filter_length,
                  non_linear_coefficients=(0.95, 0.04, 0.01),
                  isi_filter1=np.array([0.2, -0.1, 0.9, 0.3]), isi_filter2=np.array([0.2, 0.9, 0.3]),
-                 filter_init_type='rrc', print_interval=int(50000), use_brickwall=False,
-                 lr_schedule='oneclr', rrc_rolloff=0.5) -> None:
+                 filter_init_type='rrc', print_interval=int(50000), lp_filter_type='bessel',
+                 lr_schedule='oneclr', rrc_rolloff=0.5,
+                 tx_optimizer_params: dict | None = None) -> None:
         super().__init__(sps=sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          learning_rate=learning_rate, batch_size=batch_size,
                          constellation=constellation,
@@ -1334,8 +1471,9 @@ class PulseShapingNonLinearISIChannel(NonLinearISIChannel):
                          isi_filter1=isi_filter1, isi_filter2=isi_filter2,
                          tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length,
                          tx_filter_init_type=filter_init_type, rx_filter_init_type='rrc',
-                         print_interval=print_interval, use_brickwall=use_brickwall, lr_schedule=lr_schedule,
-                         rrc_rolloff=rrc_rolloff)
+                         print_interval=print_interval, lp_filter_type=lp_filter_type, lr_schedule=lr_schedule,
+                         rrc_rolloff=rrc_rolloff,
+                         tx_optimizer_params=tx_optimizer_params)
 
 
 class RxFilteringNonLinearISIChannel(NonLinearISIChannel):
@@ -1347,7 +1485,7 @@ class RxFilteringNonLinearISIChannel(NonLinearISIChannel):
                  rx_filter_length, tx_filter_length, non_linear_coefficients=(0.95, 0.04, 0.01),
                  isi_filter1=np.array([0.2, -0.1, 0.9, 0.3]), isi_filter2=np.array([0.2, 0.9, 0.3]),
                  filter_init_type='rrc', print_interval=int(50000),
-                 use_brickwall=False, lr_schedule='oneclr', rrc_rolloff=0.5) -> None:
+                 lp_filter_type='bessel', lr_schedule='oneclr', rrc_rolloff=0.5) -> None:
         super().__init__(sps=sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          learning_rate=learning_rate, batch_size=batch_size,
                          constellation=constellation,
@@ -1358,8 +1496,9 @@ class RxFilteringNonLinearISIChannel(NonLinearISIChannel):
                          isi_filter1=isi_filter1, isi_filter2=isi_filter2,
                          tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length,
                          tx_filter_init_type='rrc', rx_filter_init_type=filter_init_type,
-                         print_interval=print_interval, use_brickwall=use_brickwall, lr_schedule=lr_schedule,
-                         rrc_rolloff=rrc_rolloff)
+                         print_interval=print_interval, lp_filter_type=lp_filter_type, lr_schedule=lr_schedule,
+                         rrc_rolloff=rrc_rolloff,
+                         tx_optimizer_params=None)
 
 
 class JointTxRxNonLinearISIChannel(NonLinearISIChannel):
@@ -1372,8 +1511,9 @@ class JointTxRxNonLinearISIChannel(NonLinearISIChannel):
                  non_linear_coefficients=(0.95, 0.04, 0.01),
                  isi_filter1=np.array([0.2, -0.1, 0.9, 0.3]), isi_filter2=np.array([0.2, 0.9, 0.3]),
                  tx_filter_init_type='rrc',
-                 rx_filter_init_type='rrc', print_interval=int(50000), use_brickwall=False,
-                 lr_schedule='oneclr', rrc_rolloff=0.5) -> None:
+                 rx_filter_init_type='rrc', print_interval=int(50000), lp_filter_type='bessel',
+                 lr_schedule='oneclr', rrc_rolloff=0.5,
+                 tx_optimizer_params: dict | None = None) -> None:
         super().__init__(sps=sps, esn0_db=esn0_db, baud_rate=baud_rate,
                          learning_rate=learning_rate, batch_size=batch_size,
                          constellation=constellation,
@@ -1384,8 +1524,9 @@ class JointTxRxNonLinearISIChannel(NonLinearISIChannel):
                          isi_filter1=isi_filter1, isi_filter2=isi_filter2,
                          tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length,
                          tx_filter_init_type=tx_filter_init_type, rx_filter_init_type=rx_filter_init_type,
-                         print_interval=print_interval, use_brickwall=use_brickwall, lr_schedule=lr_schedule,
-                         rrc_rolloff=rrc_rolloff)
+                         print_interval=print_interval, lp_filter_type=lp_filter_type, lr_schedule=lr_schedule,
+                         rrc_rolloff=rrc_rolloff,
+                         tx_optimizer_params=tx_optimizer_params)
 
 
 class IntensityModulationChannel(LearnableTransmissionSystem):
@@ -1417,11 +1558,12 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  rrc_rolloff=0.5, adc_bitres=None, dac_minmax_norm: float | str = 'auto',
                  lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000),
-                 multi_channel: bool=False, adc_lp_filter_type='bessel') -> None:
+                 multi_channel: bool=False, adc_lp_filter_type='bessel',
+                 tx_optimizer_params: dict | None = None) -> None:
         super().__init__(sps=sps, esn0_db=np.nan, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation, lr_schedule=lr_schedule,
-                         eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval)
-
+                         eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
+                         tx_optimizer_params=tx_optimizer_params)
 
         # Define pulse shaper
         tx_filter_init = np.zeros((tx_filter_length,))
@@ -1566,14 +1708,16 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
             self.dac.zero_grad()
         if self.use_eq:
             self.equaliser.zero_grad()
-
-    def forward(self, symbols_up: torch.TensorType):
-        # Input is assumed to be upsampled sybmols
+    
+    def forward_tx(self, x_syms_up: torch.TensorType) -> torch.TensorType:
         # Apply pulse shaper
-        x = self.pulse_shaper.forward(symbols_up)
+        x = self.pulse_shaper.forward(x_syms_up)
 
+        return x
+    
+    def forward_channel(self, tx_signal: torch.TensorType) -> torch.TensorType:
         # Apply bandwidth limitation in the DAC
-        v = self.dac.forward(x)
+        v = self.dac.forward(tx_signal)
 
         # Apply EAM
         x_eam = self.modulator.forward(v)
@@ -1590,9 +1734,12 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         # Normalize
         y_norm = (y_lp - y_lp.mean()) / (y_lp.std())
 
+        return y_norm
+    
+    def forward_rx(self, y_channel: torch.TensorType) -> torch.TensorType:
         # Apply rx filter - applies stride inside filter (outputs sps = 1)
         # (if equaliser is not specified)
-        rx_filter_out = self.rx_filter.forward(y_norm)
+        rx_filter_out = self.rx_filter.forward(y_channel)
 
         # Apply equaliser
         rx_eq_out = self.equaliser.forward(rx_filter_out)
@@ -1675,7 +1822,8 @@ class PulseShapingIM(IntensityModulationChannel):
                  dac_config: dict, adc_bwl_cutoff_hz, modulator_type='eam',
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc', rrc_rolloff=0.5,
                  dac_minmax_norm: float | str = 'auto', adc_bitres=None, adc_lp_filter_type='bessel',
-                 lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
+                 lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000),
+                 tx_optimizer_params: dict | None = None) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
                          learn_rx=False, learn_tx=True, rx_filter_length=rx_filter_length,
@@ -1687,7 +1835,8 @@ class PulseShapingIM(IntensityModulationChannel):
                          adc_bitres=adc_bitres, dac_minmax_norm=dac_minmax_norm,
                          rrc_rolloff=rrc_rolloff, lr_schedule=lr_schedule, eval_batch_size_in_syms=eval_batch_size_in_syms,
                          print_interval=print_interval,
-                         adc_lp_filter_type=adc_lp_filter_type)
+                         adc_lp_filter_type=adc_lp_filter_type,
+                         tx_optimizer_params=tx_optimizer_params)
 
 
 class RxFilteringIM(IntensityModulationChannel):
@@ -1712,7 +1861,8 @@ class RxFilteringIM(IntensityModulationChannel):
                          adc_bwl_cutoff_hz=adc_bwl_cutoff_hz, adc_bitres=adc_bitres,
                          rrc_rolloff=rrc_rolloff, lr_schedule=lr_schedule, eval_batch_size_in_syms=eval_batch_size_in_syms,
                          print_interval=print_interval,
-                         adc_lp_filter_type=adc_lp_filter_type)
+                         adc_lp_filter_type=adc_lp_filter_type,
+                         tx_optimizer_params=None)
 
 class JointTxRxIM(IntensityModulationChannel):
     """
@@ -1725,7 +1875,8 @@ class JointTxRxIM(IntensityModulationChannel):
                  dac_minmax_norm: float | str = 'auto',
                  modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  rrc_rolloff=0.5, adc_bitres=None, adc_lp_filter_type='bessel',
-                 lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
+                 lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000),
+                 tx_optimizer_params: dict | None = None) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
                          smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
@@ -1737,7 +1888,8 @@ class JointTxRxIM(IntensityModulationChannel):
                          adc_bitres=adc_bitres,
                          rrc_rolloff=rrc_rolloff, lr_schedule=lr_schedule, eval_batch_size_in_syms=eval_batch_size_in_syms,
                          print_interval=print_interval,
-                         adc_lp_filter_type=adc_lp_filter_type)
+                         adc_lp_filter_type=adc_lp_filter_type,
+                         tx_optimizer_params=tx_optimizer_params)
 
 
 class LinearFFEIM(IntensityModulationChannel):
@@ -1762,7 +1914,8 @@ class LinearFFEIM(IntensityModulationChannel):
                          adc_bwl_cutoff_hz=adc_bwl_cutoff_hz, adc_bitres=adc_bitres,
                          rrc_rolloff=rrc_rolloff, lr_schedule=lr_schedule, eval_batch_size_in_syms=eval_batch_size_in_syms,
                          print_interval=print_interval,
-                         adc_lp_filter_type=adc_lp_filter_type)
+                         adc_lp_filter_type=adc_lp_filter_type,
+                         tx_optimizer_params=None)
 
     def get_equaliser_filter(self):
         return self.equaliser.filter.get_filter()
@@ -1792,6 +1945,8 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
                                                           |
           <-  symbol decision <- filtering <- adc <- photodiode
 
+          TODO: How to implement surrogate channel optimization with WDM?
+
     """
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  learn_rx, learn_tx, rx_filter_length, tx_filter_length,
@@ -1802,7 +1957,8 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  adc_lp_filter_type='bessel',
                  rrc_rolloff=0.5, lr_schedule='oneclr', eval_batch_size_in_syms=1000,
-                 print_interval=int(50000), torch_seed=0) -> None:
+                 print_interval=int(50000), torch_seed=0,
+                 tx_optimizer_params: dict | None = None) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation, lr_schedule=lr_schedule,
                          learn_rx=learn_rx, learn_tx=learn_tx, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
@@ -1812,7 +1968,7 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          adc_bwl_cutoff_hz=adc_bwl_cutoff_hz, rrc_rolloff=rrc_rolloff, adc_bitres=None,
                          eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
-                         multi_channel=True, adc_lp_filter_type=adc_lp_filter_type)
+                         multi_channel=True, adc_lp_filter_type=adc_lp_filter_type, tx_optimizer_params=tx_optimizer_params)
 
         self.wdm_n_channels = 3  # always three channels during training
         self.wdm_channel_spacing_hz = wdm_channel_spacing_hz
@@ -1971,7 +2127,7 @@ class PulseShapingIMwithWDM(IntensityModulationChannelwithWDM):
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_minmax_norm: float | str = 'auto', rrc_rolloff=0.5,
                  lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000),
-                 torch_seed=0) -> None:
+                 torch_seed=0, tx_optimizer_params: dict | None = None) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation, lr_schedule=lr_schedule,
                          learn_rx=False, learn_tx=True, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
@@ -1983,7 +2139,8 @@ class PulseShapingIMwithWDM(IntensityModulationChannelwithWDM):
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          adc_bwl_cutoff_hz=adc_bwl_cutoff_hz,
                          rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
-                         torch_seed=torch_seed, adc_lp_filter_type=adc_lp_filter_type)
+                         torch_seed=torch_seed, adc_lp_filter_type=adc_lp_filter_type,
+                         tx_optimizer_params=tx_optimizer_params)
 
 
 class RxFilteringIMwithWDM(IntensityModulationChannelwithWDM):
@@ -2013,7 +2170,8 @@ class RxFilteringIMwithWDM(IntensityModulationChannelwithWDM):
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          adc_bwl_cutoff_hz=adc_bwl_cutoff_hz,
                          rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
-                         torch_seed=torch_seed, adc_lp_filter_type=adc_lp_filter_type)
+                         torch_seed=torch_seed, adc_lp_filter_type=adc_lp_filter_type,
+                         tx_optimizer_params=None)
 
 
 class JointTxRxIMwithWDM(IntensityModulationChannelwithWDM):
@@ -2030,7 +2188,7 @@ class JointTxRxIMwithWDM(IntensityModulationChannelwithWDM):
                  adc_bwl_cutoff_hz, modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_minmax_norm: float | str = 'auto', rrc_rolloff=0.5, adc_lp_filter_type='bessel',
                  lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000),
-                 torch_seed=0) -> None:
+                 torch_seed=0, tx_optimizer_params: dict | None = None) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation, lr_schedule=lr_schedule,
                          learn_rx=True, learn_tx=True, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
@@ -2042,7 +2200,7 @@ class JointTxRxIMwithWDM(IntensityModulationChannelwithWDM):
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          adc_bwl_cutoff_hz=adc_bwl_cutoff_hz, adc_lp_filter_type=adc_lp_filter_type,
                          rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
-                         torch_seed=torch_seed)
+                         torch_seed=torch_seed, tx_optimizer_params=tx_optimizer_params)
 
 
 class LinearFFEIMwithWDM(IntensityModulationChannelwithWDM):
@@ -2070,4 +2228,4 @@ class LinearFFEIMwithWDM(IntensityModulationChannelwithWDM):
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          dac_minmax_norm=dac_minmax_norm, adc_bwl_cutoff_hz=adc_bwl_cutoff_hz, adc_lp_filter_type=adc_lp_filter_type,
                          rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
-                         torch_seed=torch_seed)
+                         torch_seed=torch_seed, tx_optimizer_params=None)
