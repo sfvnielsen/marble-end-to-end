@@ -1,0 +1,9 @@
+{
+    "type": "surrogate",
+    "learning_rate": 5e-2,
+    "lr_schedule": "expdecay",
+    "surrogate_channel_kwargs": {
+        "type": "fir",
+        "n_taps": 55
+    }
+}
