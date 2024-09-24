@@ -3,6 +3,10 @@ This repository contains a collection of Python implementations for learning opt
 
 Currently, the repo uses automatic differentiation via. `pytorch` for ease of experimentation and prototyping.
 
+I you find the repository useful and you use it for academic purposes, please consider throwing a reference to our paper:
+
+Nielsen, S. F., Da Ros, F., Schmidt, M. N., & Zibar, D. (2024). *End-to-End Learning of Transmitter and Receiver Filters in Bandwidth Limited Fiber Optic Communication Systems*. arXiv preprint arXiv:2409.11980. Under review.
+
 ## Getting started
 The list of required packages is collected in the `requirements.txt` file. The Python version used to create the environment is 3.10.12.
 Given that a Python virtual environment has been created (or an equivalent conda environment) the environment can be installed by the following command
