@@ -3,7 +3,7 @@ This repository contains a collection of Python implementations for learning opt
 
 Currently, the repo uses automatic differentiation via. `pytorch` for ease of experimentation and prototyping.
 
-I you find the repository useful and you use it for academic purposes, please consider throwing a reference to our paper:
+If you find the repository useful and you use it for academic purposes, please consider throwing a reference to our paper:
 
 Nielsen, S. F., Da Ros, F., Schmidt, M. N., & Zibar, D. (2024). *End-to-End Learning of Transmitter and Receiver Filters in Bandwidth Limited Fiber Optic Communication Systems*. arXiv preprint arXiv:2409.11980. Under review.
 
