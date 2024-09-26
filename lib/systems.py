@@ -6,10 +6,11 @@ import numpy.typing as npt
 import numpy as np
 import torch
 
+from commpy.filters import rrcosfilter
+from copy import deepcopy
 from torch.fft import fft, ifft, fftfreq
 from scipy.signal import bessel, lfilter, freqz, group_delay
 from scipy.fft import fftshift
-from commpy.filters import rrcosfilter
 
 from .filtering import FIRfilter, BesselFilter, BrickWallFilter, AllPassFilter, GaussianFqFilter,\
                        MultiChannelFIRfilter, MultiChannelBesselFilter, LowPassFIR, filter_initialization
@@ -220,18 +221,19 @@ class LearnableTransmissionSystem(object):
         # Select optimization framework to use for the Tx
         self.optimize_method_funcp = self._optimize_backprop_funcp  # default is backprop
         if tx_optimizer_params:
-            self.tx_optimizer_type = tx_optimizer_params.pop('type', 'backprop')
+            tx_optimizer_params_local = deepcopy(tx_optimizer_params)
+            self.tx_optimizer_type = tx_optimizer_params_local.pop('type', 'backprop')
             if self.tx_optimizer_type.lower() == 'backprop':
                 # Standard "backprop" uses the same 
                 # Assumes that we can differentiate through the channel
-                self.use_gradient_norm_clipping = tx_optimizer_params.pop('gradient_norm_clipping', True)
+                self.use_gradient_norm_clipping = tx_optimizer_params_local.pop('gradient_norm_clipping', True)
             elif self.tx_optimizer_type.lower() == 'surrogate':
                 # Differentiable surrogate channel (DSC) (cf. Niu et al. 2022, JLT, DOI: 10.1109/JLT.2022.3148270)
                 self.optimize_method_funcp = self._optimize_surrogate_funcp
-                self.surrogate_learning_rate = tx_optimizer_params.pop('learning_rate', self.learning_rate)  # learning rate surrogate optimizer
-                self.surrogate_lr_schedule = tx_optimizer_params.pop('lr_schedule', 'expdecay')
-                self.use_gradient_norm_clipping = tx_optimizer_params.pop('gradient_norm_clipping', True)
-                self.surrogate_channel = SurrogateChannel(multi_channel=tx_multi_channel, **tx_optimizer_params['surrogate_channel_kwargs'])
+                self.surrogate_learning_rate = tx_optimizer_params_local.pop('learning_rate', self.learning_rate)  # learning rate surrogate optimizer
+                self.surrogate_lr_schedule = tx_optimizer_params_local.pop('lr_schedule', 'expdecay')
+                self.use_gradient_norm_clipping = tx_optimizer_params_local.pop('gradient_norm_clipping', True)
+                self.surrogate_channel = SurrogateChannel(multi_channel=tx_multi_channel, **tx_optimizer_params_local['surrogate_channel_kwargs'])
                 self.surrogate_optimizer = torch.optim.Adam([{"params": self.surrogate_channel.parameters()}],
                                                             lr=self.surrogate_learning_rate)
             elif self.tx_optimizer_type.lower() == 'cma-es':
