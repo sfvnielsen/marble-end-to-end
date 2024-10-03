@@ -287,6 +287,7 @@ class SurrogateChannel(torch.nn.Module):
         local_kwarg_copy = deepcopy(kwargs)
         self.surrogate_type = local_kwarg_copy.pop('type')
         self.multi_channel = multi_channel
+        self.bias = torch.nn.Parameter(torch.scalar_tensor(0.0, dtype=torch.double, requires_grad=True))
 
         if self.surrogate_type.lower() == 'fir':
             self.filter_length = local_kwarg_copy['n_taps']
@@ -325,7 +326,7 @@ class SurrogateChannel(torch.nn.Module):
             raise ValueError(f"Unknown surrogate channel model type: {self.surrogate_type}")
 
     def forward(self, x):
-        return self.channel_model.forward(x)
+        return self.channel_model.forward(x) + self.bias
 
     def get_samples_discard(self):
         if self.surrogate_type.lower() == 'fir':
