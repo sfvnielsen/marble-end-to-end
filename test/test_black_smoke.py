@@ -219,11 +219,59 @@ def test_black_smoke_imdd_ffe():
 
 def test_black_smoke_imdd_ps_surrogate():
     """
-        Test FFE for IM/DD channel
+        Test PS for IM/DD channel with surrogate
     """
     IMDD_CONFIG = 'test/test_config/imdd_config.json'
     imdd_kwargs = read_json_config(IMDD_CONFIG)
     SURROGATE_CONFIG = 'test/test_config/surrogate_config.json'
+    surrogate_kwargs = read_json_config(SURROGATE_CONFIG)
+
+
+    syms = generate_symbols(N_SYMS, CONSTELLATION)
+
+    e2e_system = PulseShapingIM(constellation=CONSTELLATION,
+                                tx_optimizer_params=surrogate_kwargs,
+                                **imdd_kwargs)
+    
+    e2e_system.initialize_optimizer()
+
+    loss = e2e_system.optimize(syms, return_loss=True)
+    __ = e2e_system.evaluate(syms)
+
+    assert np.all(np.logical_not(np.isnan(loss)))
+
+
+def test_black_smoke_imdd_joint_surrogate():
+    """
+        Test joint PS+RxF for IM/DD channel with surrogate
+    """
+    IMDD_CONFIG = 'test/test_config/imdd_config.json'
+    imdd_kwargs = read_json_config(IMDD_CONFIG)
+    SURROGATE_CONFIG = 'test/test_config/surrogate_config.json'
+    surrogate_kwargs = read_json_config(SURROGATE_CONFIG)
+
+
+    syms = generate_symbols(N_SYMS, CONSTELLATION)
+
+    e2e_system = JointTxRxIM(constellation=CONSTELLATION,
+                             tx_optimizer_params=surrogate_kwargs,
+                             **imdd_kwargs)
+    
+    e2e_system.initialize_optimizer()
+
+    loss = e2e_system.optimize(syms, return_loss=True)
+    __ = e2e_system.evaluate(syms)
+
+    assert np.all(np.logical_not(np.isnan(loss)))
+
+
+def test_black_smoke_imdd_ps_surrogate_indep_tx_optim():
+    """
+        Test PS for IM/DD channel with surrogate (independent optimizers)
+    """
+    IMDD_CONFIG = 'test/test_config/imdd_config.json'
+    imdd_kwargs = read_json_config(IMDD_CONFIG)
+    SURROGATE_CONFIG = 'test/test_config/surrogate_config_independent_optimizers.json'
     surrogate_kwargs = read_json_config(SURROGATE_CONFIG)
 
 

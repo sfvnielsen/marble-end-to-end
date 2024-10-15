@@ -180,9 +180,15 @@ class Photodiode(object):
         self.sps = sps
         self.Es = None  # energy pr. symbol after detection
         self.Prec = None  # received power [dBm]
+        self.total_noise_variance = None
 
     def get_thermal_noise_std(self):
         return self.thermal_noise_std
+    
+    def get_total_noise_variance(self):
+        if self.total_noise_variance is None:
+            raise Exception("Total noise variance has not been calculated yet!")
+        return self.total_noise_variance.numpy()
 
     def get_received_power_dbm(self):
         if self.Prec is None:
@@ -205,6 +211,7 @@ class Photodiode(object):
         # Update energy pr. symbol and received power before addition of noise
         self.Prec = 10.0 * torch.log10(torch.mean(x2) / 1e-3)
         self.Es = torch.mean(torch.sum(torch.square(torch.reshape((x2 - x2.mean())[0:len(x2)//self.sps * self.sps], (-1, self.sps))), dim=1))
+        self.total_noise_variance = self.thermal_noise_std**2 + self.Fs * (var_shot / (2 * self.bandwidth))
 
         return x2 + thermal_noise + shot_noise
 

@@ -202,7 +202,7 @@ class LearnableTransmissionSystem(object):
     """
         Parent class for end-to-end learning.
     """
-    def __init__(self, sps, esn0_db, baud_rate, learning_rate, batch_size, constellation,
+    def __init__(self, sps, esn0_db, baud_rate, learning_rate, batch_size, constellation, learn_tx, learn_rx,
                  lr_schedule='expdecay', eval_batch_size_in_syms=1000, print_interval=int(5e4),
                  tx_optimizer_params: dict | None = None, tx_multi_channel=False) -> None:
         self.esn0_db = esn0_db
@@ -212,12 +212,16 @@ class LearnableTransmissionSystem(object):
         self.Ts = self.sym_length / self.sps  # effective sampling interval
         self.batch_size = batch_size
         self.learning_rate = learning_rate  # learning rate used in the main Adam optmizer (default used for Rx)
+        self.tx_learning_rate = None  # in case a separate tx optimizer is used, this is the learning rate.
         self.lr_schedule = lr_schedule
         self.eval_batch_size = eval_batch_size_in_syms * self.sps  # FIXME: Expose to all the classes
         self.batch_print_interval = print_interval / self.batch_size
         self.constellation = constellation
+        self.learn_rx = learn_rx
+        self.learn_tx = learn_tx
         self.tx_multi_channel = tx_multi_channel
         self.optimizer = None
+        self.tx_optimize = None
 
         # Select optimization framework to use for the Tx
         self.optimize_method_funcp = self._optimize_backprop_funcp  # default is backprop
@@ -225,18 +229,29 @@ class LearnableTransmissionSystem(object):
             tx_optimizer_params_local = deepcopy(tx_optimizer_params)
             self.tx_optimizer_type = tx_optimizer_params_local.pop('type', 'backprop')
             if self.tx_optimizer_type.lower() == 'backprop':
-                # Standard "backprop" uses the same 
+                # Standard "backprop" uses the same
                 # Assumes that we can differentiate through the channel
                 self.use_gradient_norm_clipping = tx_optimizer_params_local.pop('gradient_norm_clipping', True)
             elif self.tx_optimizer_type.lower() == 'surrogate':
                 # Differentiable surrogate channel (DSC) (cf. Niu et al. 2022, JLT, DOI: 10.1109/JLT.2022.3148270)
                 self.optimize_method_funcp = self._optimize_surrogate_funcp
-                self.surrogate_learning_rate = tx_optimizer_params_local.pop('learning_rate', self.learning_rate)  # learning rate surrogate optimizer
-                self.surrogate_lr_schedule = tx_optimizer_params_local.pop('lr_schedule', 'expdecay')
-                self.use_gradient_norm_clipping = tx_optimizer_params_local.pop('gradient_norm_clipping', True)
+
+                # Alternating optimization - chunk sizes
+                self.surrogate_chunk_size_pct = tx_optimizer_params_local.pop('chunk_size_pct', 0.1)
+
+                # Frequency domain loss - penalized spectrum
+                self.surrogate_fq_loss = tx_optimizer_params_local.pop('surrogate_fq_loss', False)
+
+                # Tx optimizer - if learning rate is set to None, Tx and Rx loss is added together for combined optimization
+                self.tx_learning_rate = tx_optimizer_params_local.pop('tx_learning_rate', None)  # learning rate surrogate optimizer
+                self.tx_lr_schedule = tx_optimizer_params_local.pop('tx_lr_schedule', 'expdecay')
+                self.use_gradient_norm_clipping = tx_optimizer_params_local.pop('tx_gradient_norm_clipping', True)
+
+                # Surrgate optimizer
+                self.surrogate_learning_rate = tx_optimizer_params_local.pop('surrogate_learning_rate', self.learning_rate)  # learning rate surrogate optimizer
+                self.surrogate_lr_schedule = tx_optimizer_params_local.pop('surrogate_lr_schedule', 'expdecay')
                 self.surrogate_channel = SurrogateChannel(multi_channel=tx_multi_channel, **tx_optimizer_params_local['surrogate_channel_kwargs'])
-                self.surrogate_optimizer = torch.optim.Adam([{"params": self.surrogate_channel.parameters()}],
-                                                            lr=self.surrogate_learning_rate)
+
             elif self.tx_optimizer_type.lower() == 'cma-es':
                 # Update with covariance matrix adaptation (use pycma package?)
                 raise NotImplementedError
@@ -248,9 +263,18 @@ class LearnableTransmissionSystem(object):
             self.use_gradient_norm_clipping = True
 
     def initialize_optimizer(self):
-        # TODO: When implementing CMA-ES - how to not return the Tx parameters? (as they should not be part of the Adam optimizer)
-        params = self.get_parameters()
+        params = self.get_rx_parameters()
+        if self.tx_optimizer_type.lower() == 'backprop' or not self.tx_learning_rate:
+            params += self.get_tx_parameters()
         self.optimizer = torch.optim.Adam(params, lr=self.learning_rate)
+
+        if self.tx_optimizer_type.lower() == 'surrogate': 
+            self.surrogate_optimizer = torch.optim.Adam([{"params": self.surrogate_channel.parameters()}],
+                                                        lr=self.surrogate_learning_rate)
+
+            if self.tx_learning_rate:
+                self.tx_optimizer = torch.optim.Adam(self.get_tx_parameters(),
+                                                     lr=self.tx_learning_rate)
 
     def set_esn0_db(self, new_esn0_db):
         self.esn0_db = new_esn0_db
@@ -258,31 +282,35 @@ class LearnableTransmissionSystem(object):
     def _eval(self, symbols_up: torch.TensorType, batch_size: int, decimate: bool = True) -> torch.TensorType:
         raise NotImplementedError
 
-    def get_parameters(self):
-        # TODO: Split this method in two "children" methods get_tx_parameters(), get_rx_parameters()
+    def get_tx_parameters(self):
         raise NotImplementedError
 
-    def zero_gradients(self):
-        # FIXME: Fully remove this method and use optimizer's zero_grad().
+    def get_rx_parameters(self):
         raise NotImplementedError
 
     def calculate_loss(self, tx_syms: torch.TensorType, rx_syms: torch.TensorType):
         raise NotImplementedError
-    
+
     def calculate_surrogate_loss(self, y_pred: torch.TensorType, y_true: torch.TensorType):
         discard_samples = self.surrogate_channel.get_samples_discard()
-        return torch.mean(torch.square(torch.subtract(y_pred[discard_samples:-discard_samples],
-                                                      y_true[discard_samples:-discard_samples])))
+        td_loss = torch.mean(torch.square(torch.subtract(y_pred[discard_samples:-discard_samples],
+                                                         y_true[discard_samples:-discard_samples])))
+        fq_loss = 0.0
+        if self.surrogate_fq_loss:
+            # TODO: Is it neccesarry with the dB conversion?
+            fq_loss = torch.mean(torch.square(torch.subtract(20.0 * torch.log10(torch.absolute(fft(y_pred)) + 1e-16),
+                                                             20.0 * torch.log10(torch.absolute(fft(y_true))+ 1e-16))))
+        return td_loss + 1 / len(y_true) * fq_loss
 
     def get_esn0_db(self):
         return self.esn0_db
-    
+
     def forward_tx(self, x_syms_up: torch.TensorType) -> torch.TensorType:
         raise NotImplementedError
 
     def forward_channel(self, tx_signal: torch.TensorType) -> torch.TensorType:
         raise NotImplementedError
-    
+
     def forward_rx(self, y_channel: torch.TensorType) -> torch.TensorType:
         raise NotImplementedError
 
@@ -305,40 +333,37 @@ class LearnableTransmissionSystem(object):
         n0 =  base_power_pam / esn0  # derive noise variance
         return torch.sqrt(n0)
 
-    def update_model(self, loss):
-        # TODO: Make more elaborate/specific for the different methods...
-        loss.backward()
+    def post_update(self):
+        pass
 
-        if not self.optimizer:
-            raise Exception("Optimizer was not initialized. Please call the 'initialize_optimizer' method before proceeding to optimize.")
-
-        # Gradient norm clipping
-        if self.use_gradient_norm_clipping:
-            for pgroup in self.optimizer.param_groups:
-                # FIXME: Abusing param groups a bit here.
-                # So far each param group corresponds to exatcly one parameter.
-                torch.nn.utils.clip_grad_norm_(pgroup['params'], 1.0)  # clip all gradients to unit norm
-
-        # Take gradient step.
-        self.optimizer.step()
-    
-    def create_lr_schedule(self, optimizer, lr_schedule_str, n_symbols, learning_rate):
-        if lr_schedule_str == 'oneclr':
+    def create_lr_schedule(self, optimizer: torch.optim.Optimizer, lr_schedule_str: str,
+                           learning_rate: float, n_symbols: int = 0,
+                           n_data_chunks: bool | int =False):
+        if lr_schedule_str == 'oneclr' and not n_data_chunks:
             lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer,
                                                                max_lr=10 * learning_rate,
                                                                steps_per_epoch=1,
                                                                epochs=n_symbols // self.batch_size)
-        elif lr_schedule_str == 'expdecay':
+        elif lr_schedule_str == 'oneclr' and n_data_chunks:
+            lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer,
+                                                               max_lr=10 * learning_rate,
+                                                               steps_per_epoch=1,
+                                                               epochs=n_data_chunks)
+        elif lr_schedule_str == 'expdecay' and not n_data_chunks:
             lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer,
                                                                   gamma=0.99)
+        elif lr_schedule_str == 'expdecay' and n_data_chunks:
+            lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer,
+                                                                  gamma=0.5)
         elif lr_schedule_str == 'multistep':
+            # TODO: Should we create a multistep for chunked_data?
             lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,
                                                                 milestones=[int(0.5*n_symbols // self.batch_size),
                                                                             int(0.9*n_symbols // self.batch_size)],
                                                                 gamma=0.1)
         else:
             raise ValueError(f"Unknown supplied learning rate scheduler: {lr_schedule_str}")
-        
+
         return lr_scheduler
 
 
@@ -346,7 +371,7 @@ class LearnableTransmissionSystem(object):
         loss_array = self.optimize_method_funcp(symbols)
         if return_loss:
             return loss_array
-        
+
     def _optimize_backprop_funcp(self, symbols: npt.ArrayLike):
         symbols_up = np.zeros(self.sps * len(symbols), dtype=symbols.dtype)
         symbols_up[0::self.sps] = symbols
@@ -357,11 +382,10 @@ class LearnableTransmissionSystem(object):
         if self.lr_schedule:
             lr_scheduler = self.create_lr_schedule(self.optimizer, lr_schedule_str=self.lr_schedule,
                                                    n_symbols=len(symbols), learning_rate=self.learning_rate)
-            
 
         for b in range(len(symbols) // self.batch_size):
             # Zero gradients
-            self.zero_gradients()
+            self.optimizer.zero_grad()
 
             # Slice out batch and create tensors
             this_a_up = symbols_up[b * self.batch_size * self.sps:(b * self.batch_size * self.sps + self.batch_size * self.sps)]
@@ -377,7 +401,21 @@ class LearnableTransmissionSystem(object):
             loss = self.calculate_loss(target, rx_out)
 
             # Update model using backpropagation
-            self.update_model(loss)
+            loss.backward()
+
+            if not self.optimizer:
+                raise Exception("Optimizer was not initialized. Please call the 'initialize_optimizer' method before proceeding to optimize.")
+
+            # Gradient norm clipping
+            if self.use_gradient_norm_clipping:
+                for pgroup in self.optimizer.param_groups:
+                    # FIXME: Abusing param groups a bit here.
+                    # So far each param group corresponds to exatcly one parameter.
+                    torch.nn.utils.clip_grad_norm_(pgroup['params'], 1.0)  # clip all gradients to unit norm
+
+            # Take gradient step.
+            self.optimizer.step()
+            self.post_update()
 
             this_lr = self.optimizer.param_groups[-1]['lr']
             if self.lr_schedule:
@@ -394,30 +432,73 @@ class LearnableTransmissionSystem(object):
                 break
 
         return loss_per_batch
-    
+
     def _optimize_surrogate_funcp(self, symbols: npt.ArrayLike):
-        print('Optimizing the surrogate channel...')
-        __ = self._optimize_surrogate_channel_only(symbols)
-        print('Optimizing transmission system with the surrogate channel...')
-        for param in self.surrogate_channel.parameters():
-            param.requires_grad = False
-        symbol_loss = self._optimize_surrogate_full(symbols)
-        return symbol_loss
-    
-    def _optimize_surrogate_channel_only(self, symbols: npt.ArrayLike):
-        symbols_up = np.zeros(self.sps * len(symbols), dtype=symbols.dtype)
+        n_syms_pr_chunk = int(len(symbols) * self.surrogate_chunk_size_pct)
+        symbol_losses = []
+
+        symbols_tensor = torch.from_numpy(symbols)
+
+        # Create learning rate scheduler(s)
+        if self.surrogate_lr_schedule:
+            surrogate_lr_scheduler = self.create_lr_schedule(self.surrogate_optimizer, lr_schedule_str=self.surrogate_lr_schedule,
+                                                             n_symbols=len(symbols), learning_rate=self.surrogate_learning_rate,
+                                                             n_data_chunks=len(symbols)//n_syms_pr_chunk)
+
+        if self.lr_schedule and (self.learn_rx or not self.tx_learning_rate):
+            lr_scheduler = self.create_lr_schedule(self.optimizer, lr_schedule_str=self.lr_schedule,
+                                                   n_symbols=len(symbols), learning_rate=self.learning_rate,
+                                                   n_data_chunks=len(symbols)//n_syms_pr_chunk)
+        if self.tx_lr_schedule and self.tx_learning_rate:
+            tx_lr_schedule = self.create_lr_schedule(self.tx_optimizer, lr_schedule_str=self.tx_lr_schedule,
+                                                     n_symbols=len(symbols), learning_rate=self.tx_learning_rate,
+                                                     n_data_chunks=len(symbols)//n_syms_pr_chunk)
+
+        # Loop over the chunks of the data
+        for chunk in range(len(symbols) // n_syms_pr_chunk):
+            # Optimization step on the the surrogate channel
+            # NB! Always start with the surrogate channel - needs a head start to converge before updating anything else.
+            for param in self.surrogate_channel.parameters():
+                param.requires_grad = True
+            surrogate_loss = self._optimize_surrogate_channel_only(symbols_tensor[chunk*n_syms_pr_chunk:(chunk*n_syms_pr_chunk + n_syms_pr_chunk)])
+
+            # Fix surrogate and optimize filters.
+            for param in self.surrogate_channel.parameters():
+                param.requires_grad = False
+            rx_symbol_loss, tx_symbol_loss = self._optimize_surrogate_full(symbols_tensor[chunk*n_syms_pr_chunk:(chunk*n_syms_pr_chunk + n_syms_pr_chunk)])
+            symbol_losses.append(rx_symbol_loss)
+
+            # Update stepsizes according to schedule
+            if self.surrogate_lr_schedule:
+                surrogate_lr_scheduler.step()
+
+            if self.lr_schedule and (self.learn_rx or not self.tx_learning_rate):
+                lr_scheduler.step()
+
+            if self.tx_lr_schedule and self.tx_learning_rate:
+                tx_lr_schedule.step()
+            
+            # Print the status of the optimization (loss and lrs)
+            this_surrogate_lr = self.surrogate_optimizer.param_groups[-1]['lr']
+            this_rx_lr = self.optimizer.param_groups[-1]['lr']
+            this_tx_lr = self.tx_optimizer.param_groups[-1]['lr'] if self.tx_learning_rate else np.nan
+            print_strs = [f"Chunk {chunk} (# symbols {chunk * n_syms_pr_chunk:.2e})"]
+            print_strs.append(f"Surrogate loss: {surrogate_loss[-1]:.3f} (LR: {this_surrogate_lr:.2e})")
+            print_strs.append(f"Symbol loss (Rx): {rx_symbol_loss[-1]:.3f} (LR: {this_rx_lr:.2e})")
+            print_strs.append(f"Symbol loss (Tx): {tx_symbol_loss[-1]:.3f} (LR: {this_tx_lr:.2e})")
+            print(" - ".join(print_strs))
+
+        return np.concatenate(symbol_losses)
+
+    def _optimize_surrogate_channel_only(self, symbols: torch.TensorType):
+        symbols_up = torch.zeros(self.sps * len(symbols), dtype=symbols.dtype)
         symbols_up[0::self.sps] = symbols
 
         loss_per_batch = np.empty((len(symbols) // self.batch_size, ), dtype=np.float64)
-    
-        if self.surrogate_lr_schedule:
-            surrogate_lr_scheduler = self.create_lr_schedule(self.surrogate_optimizer, lr_schedule_str=self.surrogate_lr_schedule,
-                                                   n_symbols=len(symbols), learning_rate=self.surrogate_learning_rate)
 
         for b in range(len(symbols) // self.batch_size):
             # Slice out batch and create tensors
-            this_a_up = symbols_up[b * self.batch_size * self.sps:(b * self.batch_size * self.sps + self.batch_size * self.sps)]
-            tx_syms_up = torch.from_numpy(this_a_up)
+            tx_syms_up = symbols_up[b * self.batch_size * self.sps:(b * self.batch_size * self.sps + self.batch_size * self.sps)]
 
             # Gradient descent on surrogate model - use real channel as ground truth
             self.surrogate_optimizer.zero_grad(set_to_none=True)
@@ -429,13 +510,6 @@ class LearnableTransmissionSystem(object):
             surrogate_loss.backward()
             self.surrogate_optimizer.step()
 
-            this_lr = self.surrogate_optimizer.param_groups[-1]['lr']
-            if self.surrogate_lr_schedule:
-                surrogate_lr_scheduler.step()
-
-            if b % self.batch_print_interval == 0:
-                print(f"Batch {b} (# symbols {b * self.batch_size:.2e}) - Surrogate Loss: {surrogate_loss.item():.3f} - LR: {this_lr:.2e}")
-
             loss_per_batch[b] = surrogate_loss.item()
 
             if torch.isnan(surrogate_loss):
@@ -443,29 +517,28 @@ class LearnableTransmissionSystem(object):
                 break
 
         return loss_per_batch
-    
-    def _optimize_surrogate_full(self, symbols: npt.ArrayLike):
-        # Create learning rate scheduler
-        if self.lr_schedule:
-            lr_scheduler = self.create_lr_schedule(self.optimizer, lr_schedule_str=self.lr_schedule,
-                                                   n_symbols=len(symbols), learning_rate=self.learning_rate)
-        symbols_up = np.zeros(self.sps * len(symbols), dtype=symbols.dtype)
+
+    def _optimize_surrogate_full(self, symbols: torch.TensorType):
+        if not self.optimizer:
+            raise Exception("Optimizer was not initialized. Please call the 'initialize_optimizer' method before proceeding to optimize.")
+
+        symbols_up = torch.zeros(self.sps * len(symbols), dtype=symbols.dtype)
         symbols_up[0::self.sps] = symbols
 
-        loss_per_batch = np.empty((len(symbols) // self.batch_size, ), dtype=np.float64)
-    
+        rx_loss_per_batch = np.empty((len(symbols) // self.batch_size, ), dtype=np.float64)
+        tx_loss_per_batch = np.empty((len(symbols) // self.batch_size, ), dtype=np.float64)
+
         for b in range(len(symbols) // self.batch_size):
             # Zero gradients
-            self.zero_gradients()
+            self.optimizer.zero_grad(set_to_none=True)
+            if self.tx_learning_rate:
+                self.tx_optimizer.zero_grad(set_to_none=True)
 
-            # Slice out batch and create tensors
-            this_a_up = symbols_up[b * self.batch_size * self.sps:(b * self.batch_size * self.sps + self.batch_size * self.sps)]
-            target = torch.from_numpy(symbols[b * self.batch_size:(b * self.batch_size + self.batch_size)])
-            tx_syms_up = torch.from_numpy(this_a_up)
+            # Slice out batch
+            target = symbols[b * self.batch_size:(b * self.batch_size + self.batch_size)]
+            tx_syms_up = symbols_up[b * self.batch_size * self.sps:(b * self.batch_size * self.sps + self.batch_size * self.sps)]
 
             # Run upsampled symbols through system forward model - return symbols at Rx
-            loss = 0.0
-            
             # Run Tx signal through real channel
             with torch.no_grad():
                 tx = self.forward_tx(tx_syms_up)
@@ -475,35 +548,53 @@ class LearnableTransmissionSystem(object):
             tx = self.forward_tx(tx_syms_up)
             ychan = self.surrogate_channel.forward(tx)
             rx_out_surrogate = self.forward_rx(ychan)
-            loss += self.calculate_loss(target, rx_out_surrogate)
-            
+            tx_loss = self.calculate_loss(target, rx_out_surrogate)
+
             # Furthermore, add the "Rx-only-loss" that uses the real-channel
-            # (calculated below)
             rx_out = self.forward_rx(ychan_true)
 
             # Calculate loss
-            loss += self.calculate_loss(target, rx_out)
+            rx_loss = self.calculate_loss(target, rx_out)
 
-            # Update model using backpropagation
-            self.update_model(loss)
+            if self.tx_learning_rate:
+                # Update using backpropagation
+                tx_loss.backward()
 
-            # Update stepsizes according to schedule
-            this_lr = self.optimizer.param_groups[-1]['lr']
-            if self.lr_schedule:
-                lr_scheduler.step()
-                this_lr = lr_scheduler.get_last_lr()[0]
+                # Gradient norm clipping
+                if self.use_gradient_norm_clipping:
+                    for pgroup in self.get_tx_parameters():
+                        torch.nn.utils.clip_grad_norm_(pgroup['params'], 1.0)  # clip all gradients to unit norm
 
-            if b % self.batch_print_interval == 0:
-                print(f"Batch {b} (# symbols {b * self.batch_size:.2e}) - Loss: {loss.item():.3f} - LR: {this_lr:.2e}")
+                # Take gradient step.
+                self.tx_optimizer.step()
 
-            loss_per_batch[b] = loss.item()
+                # Update using backpropagation
+                if self.learn_rx:
+                    rx_loss.backward()
+                    self.optimizer.step()
+            else:
+                # Combined optimization
+                loss = tx_loss + rx_loss
+                loss.backward()
 
-            if torch.isnan(loss):
+                # Gradient norm clipping
+                if self.use_gradient_norm_clipping:
+                    for pgroup in self.get_tx_parameters():
+                        torch.nn.utils.clip_grad_norm_(pgroup['params'], 1.0)  # clip all gradients to unit norm
+
+                self.optimizer.step()
+            
+            self.post_update()
+
+            rx_loss_per_batch[b] = rx_loss.item()
+            tx_loss_per_batch[b] = tx_loss.item()
+
+            if torch.isnan(rx_loss) or torch.isnan(tx_loss):
                 print("Detected loss to be nan. Terminate training...")
                 break
 
-        return loss_per_batch
-        
+        return rx_loss_per_batch, tx_loss_per_batch
+
 
     def evaluate(self, symbols: npt.ArrayLike, **eval_config):
         # Upsample
@@ -531,6 +622,8 @@ class BasicAWGN(LearnableTransmissionSystem):
                          learning_rate=learning_rate,
                          batch_size=batch_size,
                          constellation=constellation,
+                         learn_rx=learn_rx,
+                         learn_tx=learn_tx,
                          print_interval=print_interval,
                          lr_schedule=lr_schedule,
                          tx_optimizer_params=tx_optimizer_params)
@@ -573,15 +666,11 @@ class BasicAWGN(LearnableTransmissionSystem):
         # Define number of symbols to discard pr. batch due to boundary effects of convolution
         self.discard_per_batch = int((self.pulse_shaper.filter_length + self.rx_filter.filter_length) / self.sps)
 
-    def get_parameters(self):
-        params_to_return = []
-        params_to_return.append({"params": self.pulse_shaper.parameters()})
-        params_to_return.append({"params": self.rx_filter.parameters()})
-        return params_to_return
+    def get_rx_parameters(self):
+        return [{"params": self.rx_filter.parameters()}]
 
-    def zero_gradients(self):
-        self.pulse_shaper.zero_grad()
-        self.rx_filter.zero_grad()
+    def get_tx_parameters(self):
+        return [{"params": self.pulse_shaper.parameters()}]
 
     def forward_tx(self, x_syms_up: torch.TensorType):
         # Input is assumed to be upsampled sybmols
@@ -591,7 +680,7 @@ class BasicAWGN(LearnableTransmissionSystem):
         # Normalize (if self.normalization_after_tx is set, else norm_constant = 1.0)
         x = x / self.normalization_constant
         return x
-    
+
     def forward_channel(self, tx_signal: torch.TensorType) -> torch.TensorType:
          # Add white noise based on desired EsN0
         with torch.no_grad():
@@ -636,8 +725,7 @@ class BasicAWGN(LearnableTransmissionSystem):
     def calculate_loss(self, tx_syms: torch.TensorType, rx_syms: torch.TensorType):
         return torch.mean(torch.square(tx_syms[self.discard_per_batch:-self.discard_per_batch] - rx_syms[self.discard_per_batch:-self.discard_per_batch]))
 
-    def update_model(self, loss):
-        super().update_model(loss)
+    def post_update(self):
         # Projected gradient - Normalize filters
         self.pulse_shaper.normalize_filter()
         self.rx_filter.normalize_filter()
@@ -713,6 +801,8 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
                          learning_rate=learning_rate,
                          batch_size=batch_size,
                          constellation=constellation,
+                         learn_rx=learn_rx,
+                         learn_tx=learn_tx,
                          print_interval=print_interval,
                          lr_schedule=lr_schedule,
                          tx_optimizer_params=tx_optimizer_params,
@@ -800,26 +890,22 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         self.channel_delay_in_syms = int(np.ceil((self.adc.get_sample_delay() + self.dac.get_sample_delay())/self.sps))
         print(f"Channel delay is {self.channel_delay_in_syms} [symbols]")
 
-    def get_parameters(self):
-        params_to_return = []
-        params_to_return.append({"params": self.pulse_shaper.parameters()})
-        params_to_return.append({"params": self.rx_filter.parameters()})
+    def get_rx_parameters(self):
+        params_to_return =  [{"params": self.rx_filter.parameters()}]
         if self.use_eq:
             params_to_return += self.equaliser.get_parameters()
         return params_to_return
 
-    def zero_gradients(self):
-        self.pulse_shaper.zero_grad()
-        self.rx_filter.zero_grad()
-        self.equaliser.zero_grad()
+    def get_tx_parameters(self):
+        return [{"params": self.pulse_shaper.parameters()}]
 
     def forward_tx(self, x_syms_up: torch.TensorType) -> torch.TensorType:
         # Input is assumed to be upsampled sybmols
         # Apply pulse shaper
         x = self.pulse_shaper.forward(x_syms_up)
-        
+
         return x
-    
+
     def forward_channel(self, tx_signal: torch.TensorType) -> torch.TensorType:
         # Normalize
         x = tx_signal / self.normalization_constant
@@ -886,8 +972,7 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         return torch.mean(torch.square(torch.subtract(tx_syms[self.discard_per_batch:-self.discard_per_batch],
                                                       torch.roll(rx_syms, -self.channel_delay_in_syms)[self.discard_per_batch:-self.discard_per_batch])))
 
-    def update_model(self, loss):
-        super().update_model(loss)
+    def post_update(self):
         # Projected gradient - Normalize filters
         self.pulse_shaper.normalize_filter()
         self.rx_filter.normalize_filter()
@@ -1016,7 +1101,7 @@ class BasicAWGNwithBWLandWDM(BasicAWGNwithBWL):
         Bandwidth limited AWGN channel with wavelength division multiplexing (WDM)
 
         TODO: How to integrate surrogate model in WDM? How much should it model?
-        WIP... 
+        WIP...
          - Only model the channel of interest? (How to structure that in code?)
          - MultiChannel input, single output?
     """
@@ -1085,7 +1170,7 @@ class BasicAWGNwithBWLandWDM(BasicAWGNwithBWL):
 
         # Apply bandwidth limitation in the ADC
         y_lp = self.adc.forward(y_chan)
-        
+
         return y_lp
 
     def forward_rx(self, y_channel: torch.TensorType) -> torch.TensorType:
@@ -1289,6 +1374,8 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
                          learning_rate=learning_rate,
                          batch_size=batch_size,
                          constellation=constellation,
+                         learn_rx=learn_rx,
+                         learn_tx=learn_tx,
                          print_interval=print_interval,
                          lr_schedule=lr_schedule,
                          tx_optimizer_params=tx_optimizer_params)
@@ -1379,21 +1466,18 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
         # Calculate constellation scale
         self.constellation_scale = np.sqrt(np.average(np.square(constellation)))
 
-    def get_parameters(self):
-        params_to_return = []
-        params_to_return.append({"params": self.pulse_shaper.parameters()})
-        params_to_return.append({"params": self.rx_filter.parameters()})
+    def get_rx_parameters(self):
+        params_to_return =  [{"params": self.rx_filter.parameters()}]
         return params_to_return
 
-    def zero_gradients(self):
-        self.pulse_shaper.zero_grad()
-        self.rx_filter.zero_grad()
+    def get_tx_parameters(self):
+        return [{"params": self.pulse_shaper.parameters()}]
 
     def forward_tx(self, x_syms_up: torch.TensorType) -> torch.TensorType:
         # Input is assumed to be upsampled sybmols
         # Apply pulse shaper
         x = self.pulse_shaper.forward(x_syms_up)
-        
+
         # Normalize
         x = x / self.normalization_constant
 
@@ -1464,8 +1548,7 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
         # NB! Rx sequence is coarsely aligned to the tx-symbol sequence based on a apriori known channel delay.
         return torch.mean(torch.square(tx_syms[self.discard_per_batch:-self.discard_per_batch] - torch.roll(rx_syms, -self.channel_delay_in_syms)[self.discard_per_batch:-self.discard_per_batch]))
 
-    def update_model(self, loss):
-        super().update_model(loss)
+    def post_update(self):
         # Projected gradient - Normalize filters
         self.pulse_shaper.normalize_filter()
         self.rx_filter.normalize_filter()
@@ -1591,9 +1674,17 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
                  lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000),
                  multi_channel: bool=False, adc_lp_filter_type='bessel',
                  tx_optimizer_params: dict | None = None) -> None:
-        super().__init__(sps=sps, esn0_db=np.nan, baud_rate=baud_rate, learning_rate=learning_rate,
-                         batch_size=batch_size, constellation=constellation, lr_schedule=lr_schedule,
-                         eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
+        super().__init__(sps=sps,
+                         esn0_db=np.nan,
+                         baud_rate=baud_rate,
+                         learning_rate=learning_rate,
+                         batch_size=batch_size,
+                         constellation=constellation,
+                         learn_rx=learn_rx,
+                         learn_tx=learn_tx,
+                         lr_schedule=lr_schedule,
+                         eval_batch_size_in_syms=eval_batch_size_in_syms,
+                         print_interval=print_interval,
                          tx_optimizer_params=tx_optimizer_params)
 
         # Define pulse shaper
@@ -1721,31 +1812,24 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         # Converting average energy pr. symbol into base power (cf. https://wirelesspi.com/pulse-amplitude-modulation-pam/)
         self.Es = es * (3 / (len(self.constellation)**2 - 1))
 
-    def get_parameters(self):
-        params_to_return = []
-        params_to_return.append({"params": self.pulse_shaper.parameters()})
-        params_to_return.append({"params": self.rx_filter.parameters()})
-        if self.optimizable_dac:
-            params_to_return.append({"params": self.dac.parameters()})
+    def get_rx_parameters(self):
+        params_to_return =  [{"params": self.rx_filter.parameters()}]
         if self.use_eq:
             params_to_return += self.equaliser.get_parameters()
-
         return params_to_return
 
-    def zero_gradients(self):
-        self.pulse_shaper.zero_grad()
-        self.rx_filter.zero_grad()
+    def get_tx_parameters(self):
+        params_to_return = [{"params": self.pulse_shaper.parameters()}]
         if self.optimizable_dac:
-            self.dac.zero_grad()
-        if self.use_eq:
-            self.equaliser.zero_grad()
-    
+            params_to_return.append({"params": self.dac.parameters()})
+        return params_to_return
+
     def forward_tx(self, x_syms_up: torch.TensorType) -> torch.TensorType:
         # Apply pulse shaper
         x = self.pulse_shaper.forward(x_syms_up)
 
         return x
-    
+
     def forward_channel(self, tx_signal: torch.TensorType) -> torch.TensorType:
         # Apply bandwidth limitation in the DAC
         v = self.dac.forward(tx_signal)
@@ -1766,7 +1850,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         y_norm = (y_lp - y_lp.mean()) / (y_lp.std())
 
         return y_norm
-    
+
     def forward_rx(self, y_channel: torch.TensorType) -> torch.TensorType:
         # Apply rx filter - applies stride inside filter (outputs sps = 1)
         # (if equaliser is not specified)
@@ -1810,6 +1894,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
 
         # Normalize
         y_norm = (y_lp - y_lp.mean()) / (y_lp.std())
+        print(f"Photodiode (after ADC and norm): Noise variance: {self.photodiode.get_total_noise_variance() / y_lp.std()}")
 
         # Apply rx filter - applies stride inside filter (outputs sps = 1)
         if not decimate:
@@ -1830,8 +1915,7 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         # NB! Rx sequence is coarsely aligned to the tx-symbol sequence based on a apriori known channel delay.
         return torch.mean(torch.square(tx_syms[self.discard_per_batch:-self.discard_per_batch] - torch.roll(rx_syms, -self.channel_delay_in_syms)[self.discard_per_batch:-self.discard_per_batch]))
 
-    def update_model(self, loss):
-        super().update_model(loss)
+    def post_update(self):
         # Projected gradient - Normalize filters
         self.pulse_shaper.normalize_filter()
         self.rx_filter.normalize_filter()
@@ -2048,9 +2132,9 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
 
         # Normalize
         y_norm = (y_lp - y_lp.mean()) / (y_lp.std())
-        
+
         return y_norm
-    
+
     def forward_rx(self, y_channel: torch.TensorType) -> torch.TensorType:
         # Apply rx filter - applies stride inside filter (outputs sps = 1, if no equalsier)
         rx_filter_out = self.rx_filter.forward(y_channel)
@@ -2189,7 +2273,7 @@ class RxFilteringIMwithWDM(IntensityModulationChannelwithWDM):
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length,
                  smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_config: dict, wdm_channel_spacing_hz, adc_bwl_cutoff_hz, 
+                 dac_config: dict, wdm_channel_spacing_hz, adc_bwl_cutoff_hz,
                  wdm_channel_selection_rel_cutoff, adc_lp_filter_type='bessel',
                  modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_minmax_norm: float | str = 'auto', rrc_rolloff=0.5,

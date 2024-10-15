@@ -1,0 +1,15 @@
+{
+    "type": "surrogate",
+    "chunk_size_pct": 0.2,
+    "tx_learning_rate": 1e-3,
+    "tx_lr_schedule": "oneclr",
+    "surrogate_fq_loss": true,
+    "surrogate_learning_rate": 5e-2,
+    "surrogate_lr_schedule": "expdecay",
+    "surrogate_channel_kwargs": {
+        "type": "cnn",
+        "n_lags": 101,
+        "n_hidden_units": 8,
+        "n_hidden_layers": 5
+    }
+}
