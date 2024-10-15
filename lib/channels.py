@@ -276,6 +276,47 @@ class WienerHammersteinNN(torch.nn.Module):
     def discard_samples(self):
         return len(self.fir_filter1) // 2 + len(self.fir_filter2) // 2
 
+
+class CNN(torch.nn.Module):
+    """
+        CNN with multiple filters and a standard fully connected network at the end
+    """
+    def __init__(self, n_lags, n_hidden_units, n_hidden_layers, dtype=torch.double,
+                 torch_device=torch.device('cpu'), **kwargs) -> None:
+        super().__init__(**kwargs)
+
+        # Set properties of class
+        self.dtype = dtype
+        self.torch_device = torch_device
+
+        # Initialize kernels for CNN part
+        assert (n_lags + 1) % 2 == 0
+        self.n_lags = n_lags
+        self.cnn = torch.nn.Conv1d(in_channels=1, out_channels=n_hidden_units, kernel_size=n_lags,
+                                   padding=n_lags // 2, dtype=dtype, device=torch_device)
+
+        # Initialize the fully-connected NN
+        self.hidden_layers = torch.nn.ModuleList([create_linear_layer(n_hidden_units).to(dtype).to(self.torch_device) for __ in range(n_hidden_layers)])
+        self.linear_join = torch.nn.Linear(in_features=n_hidden_units, out_features=1).to(dtype).to(self.torch_device)
+
+    def forward(self, x: torch.TensorType) -> torch.TensorType:
+        # Apply CNN
+        z = self.cnn.forward(x[None, None, :]).squeeze().T
+
+        # Apply the FCs
+        for layer in self.hidden_layers:
+            z = layer.forward(z)
+        
+        # Reduce dimensionality
+        y = self.linear_join.forward(z).squeeze()
+
+        return y
+
+    def discard_samples(self):
+        return self.n_lags
+
+
+
 class SurrogateChannel(torch.nn.Module):
     """
         Surrogate channel that estimates the channel response through a
@@ -322,6 +363,12 @@ class SurrogateChannel(torch.nn.Module):
                 raise NotImplementedError
             else:
                 self.channel_model = WienerHammersteinNN(**local_kwarg_copy)
+        elif self.surrogate_type.lower() == 'cnn':
+            if self.multi_channel:
+                # FIXME: Implement multi-channel version of this channel estimator.
+                raise NotImplementedError
+            else:
+                self.channel_model = CNN(**local_kwarg_copy)
         else:
             raise ValueError(f"Unknown surrogate channel model type: {self.surrogate_type}")
 
@@ -333,7 +380,8 @@ class SurrogateChannel(torch.nn.Module):
             return self.filter_length // 2
         elif self.surrogate_type.lower() == 'wh' or \
              self.surrogate_type.lower() == 'wiener_nn' or \
-             self.surrogate_type.lower() == 'hammerstein_nn':
+             self.surrogate_type.lower() == 'hammerstein_nn' or \
+             self.surrogate_type.lower() == 'cnn':
             return self.channel_model.discard_samples()
         else:
             print(f"WARNING! Unknown channel model...")

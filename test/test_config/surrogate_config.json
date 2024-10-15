@@ -1,7 +1,9 @@
 {
     "type": "surrogate",
-    "learning_rate": 5e-2,
-    "lr_schedule": "expdecay",
+    "tx_learning_rate": 1e-3,
+    "tx_lr_schedule": "oneclr",
+    "surrogate_learning_rate": 5e-2,
+    "surrogate_lr_schedule": "expdecay",
     "surrogate_channel_kwargs": {
         "type": "fir",
         "n_taps": 55
