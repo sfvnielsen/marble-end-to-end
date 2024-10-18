@@ -221,11 +221,14 @@ class LearnableTransmissionSystem(object):
         self.learn_tx = learn_tx
         self.tx_multi_channel = tx_multi_channel
         self.optimizer = None
-        self.tx_optimize = None
+        self.tx_optimizer = None
 
         # Select optimization framework to use for the Tx
         self.optimize_method_funcp = self._optimize_backprop_funcp  # default is backprop
         if tx_optimizer_params:
+            if self.learn_tx == False:
+                raise ValueError(f"learn_tx flag needs to be 'true' when specifying a tx_optimizer")
+
             tx_optimizer_params_local = deepcopy(tx_optimizer_params)
             self.tx_optimizer_type = tx_optimizer_params_local.pop('type', 'backprop')
             if self.tx_optimizer_type.lower() == 'backprop':
@@ -237,7 +240,7 @@ class LearnableTransmissionSystem(object):
                 self.optimize_method_funcp = self._optimize_surrogate_funcp
 
                 # Alternating optimization - chunk sizes
-                self.surrogate_chunk_size_pct = tx_optimizer_params_local.pop('chunk_size_pct', 0.1)
+                self.chunk_size_pct = tx_optimizer_params_local.pop('chunk_size_pct', 0.1)
 
                 # Frequency domain loss - penalized spectrum
                 self.surrogate_fq_loss = tx_optimizer_params_local.pop('surrogate_fq_loss', False)
@@ -255,6 +258,17 @@ class LearnableTransmissionSystem(object):
             elif self.tx_optimizer_type.lower() == 'cma-es':
                 # Update with covariance matrix adaptation (use pycma package?)
                 raise NotImplementedError
+            elif self.tx_optimizer_type.lower() == 'gaussian_rl':
+                # Implementation of Aoudia and Hoydis (2019) - 10.1109/JSAC.2019.2933891
+                # Reinforcement learning with random Gaussian policy.
+                self.optimize_method_funcp = self._optimize_gaussian_rl
+
+                # Chunk size
+                self.chunk_size_pct = tx_optimizer_params_local.pop('chunk_size_pct', 0.1)
+
+                # Hyperparameters of optimization
+                self.policy_noise_std = tx_optimizer_params_local.pop('policy_noise_std', 0.1)
+                
             else:
                 raise ValueError(f"Unknown optimizer type: '{self.tx_optimizer_type}'")
         else:
@@ -275,6 +289,9 @@ class LearnableTransmissionSystem(object):
             if self.tx_learning_rate:
                 self.tx_optimizer = torch.optim.Adam(self.get_tx_parameters(),
                                                      lr=self.tx_learning_rate)
+        
+        if self.tx_optimizer_type.lower() == 'gaussian_rl':
+            raise NotImplementedError
 
     def set_esn0_db(self, new_esn0_db):
         self.esn0_db = new_esn0_db
@@ -434,7 +451,7 @@ class LearnableTransmissionSystem(object):
         return loss_per_batch
 
     def _optimize_surrogate_funcp(self, symbols: npt.ArrayLike):
-        n_syms_pr_chunk = int(len(symbols) * self.surrogate_chunk_size_pct)
+        n_syms_pr_chunk = int(len(symbols) * self.chunk_size_pct)
         symbol_losses = []
 
         symbols_tensor = torch.from_numpy(symbols)
@@ -594,6 +611,127 @@ class LearnableTransmissionSystem(object):
                 break
 
         return rx_loss_per_batch, tx_loss_per_batch
+    
+    def _optimize_gaussian_rl(self, symbols: npt.ArrayLike):
+        """
+            main routine of the Gaussian reinforcement learning method
+        """
+        n_syms_pr_chunk = int(len(symbols) * self.chunk_size_pct)
+        symbol_losses = []
+        symbols_tensor = torch.from_numpy(symbols)
+
+        # Create learning rate scheduler(s)
+        if self.lr_schedule and self.learn_rx:
+            lr_scheduler = self.create_lr_schedule(self.optimizer, lr_schedule_str=self.lr_schedule,
+                                                   n_symbols=len(symbols), learning_rate=self.learning_rate,
+                                                   n_data_chunks=len(symbols)//n_syms_pr_chunk)
+        if self.tx_lr_schedule:
+            tx_lr_schedule = self.create_lr_schedule(self.tx_optimizer, lr_schedule_str=self.tx_lr_schedule,
+                                                     n_symbols=len(symbols), learning_rate=self.tx_learning_rate,
+                                                     n_data_chunks=len(symbols)//n_syms_pr_chunk)
+
+        # Loop over the chunks of the data
+        for chunk in range(len(symbols) // n_syms_pr_chunk):
+            # Take step on the Tx side
+            loss_chunk = self._optimize_gaussian_rl_tx(symbols_tensor[chunk*n_syms_pr_chunk:(chunk*n_syms_pr_chunk + n_syms_pr_chunk)])
+
+            # Take step on Rx side
+            if self.learn_rx:
+                loss_chunk = self._optimize_gaussian_rl_rx(symbols_tensor[chunk*n_syms_pr_chunk:(chunk*n_syms_pr_chunk + n_syms_pr_chunk)])
+
+            # Update stepsizes according to schedule
+            if self.lr_schedule and self.learn_rx:
+                lr_scheduler.step()
+
+            if self.tx_lr_schedule:
+                tx_lr_schedule.step()
+            
+            # Print the status of the optimization (loss and lrs)
+            this_rx_lr = self.optimizer.param_groups[-1]['lr'] if self.lr_schedule and self.learn_rx else np.nan
+            this_tx_lr = self.tx_optimizer.param_groups[-1]['lr']
+            print_strs = [f"Chunk {chunk} (# symbols {chunk * n_syms_pr_chunk:.2e})"]
+
+            print_strs.append(f"Symbol loss: {loss_chunk[-1]:.3f} (Rx LR: {this_rx_lr:.2e}, Tx LR {this_tx_lr:.2e})")
+            print(" - ".join(print_strs))
+            symbol_losses.append(loss_chunk)
+
+        return np.concatenate(symbol_losses)
+    
+    def _optimize_gaussian_rl_tx(self, symbols: torch.TensorType) -> npt.ArrayLike:
+        loss_per_batch = np.empty((len(symbols) // self.batch_size, ), dtype=np.float64)
+        symbols_up = torch.zeros(self.sps * len(symbols), dtype=symbols.dtype)
+        symbols_up[0::self.sps] = symbols
+
+        for b in range(len(symbols) // self.batch_size):
+            # Zero gradients
+            self.tx_optimizer.zero_grad()
+
+            # Slice out batch
+            target = symbols[b * self.batch_size:(b * self.batch_size + self.batch_size)]
+            tx_syms_up = symbols_up[b * self.batch_size * self.sps:(b * self.batch_size * self.sps + self.batch_size * self.sps)]
+
+            # Run upsampled symbols through system forward model - return symbols at Rx
+            tx = self.forward_tx(tx_syms_up)
+
+            # Apply policy - random Gaussian noise (proposed in Aoudia and Hoydis, 2019)
+            txp = torch.sqrt(1 - self.policy_noise_std**2) * tx + self.policy_noise_std * torch.randn_like(tx)
+
+            with torch.no_grad():
+                ychan = self.forward_channel(txp)
+                rx_out = self.forward_rx(ychan)
+
+            # Calculate loss per symbol
+            loss_pr_symb = torch.square(rx_out - target)  # squared error
+            loss_per_batch[b] = loss_pr_symb.mean().item()
+
+            # Calcuate the approximate gradient
+            # FIXME .... Hmm whats up with the dimensions...?
+            # TODO: Investigate using vjp from torch.func to get the partials we need...
+
+            # Apply Adam step and apply gradient.
+
+
+            if torch.isnan(loss_per_batch[b]):
+                print("Detected loss to be nan. Terminate training...")
+                break
+
+        return loss_per_batch
+
+    def _optimize_gaussian_rl_rx(self, symbols: torch.TensorType) -> npt.ArrayLike:
+        loss_per_batch = np.empty((len(symbols) // self.batch_size, ), dtype=np.float64)
+        symbols_up = torch.zeros(self.sps * len(symbols), dtype=symbols.dtype)
+        symbols_up[0::self.sps] = symbols
+
+        for b in range(len(symbols) // self.batch_size):
+            # Zero gradients
+            self.optimizer.zero_grad()
+
+            # Slice out batch
+            target = symbols[b * self.batch_size:(b * self.batch_size + self.batch_size)]
+            tx_syms_up = symbols_up[b * self.batch_size * self.sps:(b * self.batch_size * self.sps + self.batch_size * self.sps)]
+
+            # Run upsampled symbols through system forward model - return symbols at Rx
+            with torch.no_grad():
+                tx = self.forward_tx(tx_syms_up)
+                ychan = self.forward_channel(tx)
+
+            rx_out = self.forward_rx(ychan)
+
+            # Calculate loss
+            loss = self.calculate_loss(target, rx_out)
+
+            # Update model using backpropagation
+            loss.backward()
+
+            # Take gradient step and log loss
+            self.optimizer.step()
+            loss_per_batch[b] = loss.item()
+
+            if torch.isnan(loss):
+                print("Detected loss to be nan. Terminate training...")
+                break
+
+        return loss_per_batch
 
 
     def evaluate(self, symbols: npt.ArrayLike, **eval_config):
