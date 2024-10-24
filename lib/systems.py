@@ -9,6 +9,7 @@ import torch
 from commpy.filters import rrcosfilter
 from copy import deepcopy
 from torch.fft import fft, ifft, fftfreq
+from torchaudio.functional import convolve as tconvolve
 from scipy.signal import bessel, lfilter, freqz, group_delay
 from scipy.fft import fftshift
 
@@ -262,6 +263,8 @@ class LearnableTransmissionSystem(object):
                 # Implementation of Aoudia and Hoydis (2019) - 10.1109/JSAC.2019.2933891
                 # Reinforcement learning with random Gaussian policy.
                 self.optimize_method_funcp = self._optimize_gaussian_rl
+                self.tx_learning_rate = tx_optimizer_params_local.pop('learning_rate', 1e-3)
+                self.tx_lr_schedule = None  # FIXME...
 
                 # Chunk size
                 self.chunk_size_pct = tx_optimizer_params_local.pop('chunk_size_pct', 0.1)
@@ -291,7 +294,7 @@ class LearnableTransmissionSystem(object):
                                                      lr=self.tx_learning_rate)
         
         if self.tx_optimizer_type.lower() == 'gaussian_rl':
-            raise NotImplementedError
+            print("TODO: Running with fixed learning rate and no Adam step...")
 
     def set_esn0_db(self, new_esn0_db):
         self.esn0_db = new_esn0_db
@@ -300,6 +303,9 @@ class LearnableTransmissionSystem(object):
         raise NotImplementedError
 
     def get_tx_parameters(self):
+        raise NotImplementedError
+    
+    def get_tx_parameters_as_list(self) -> list:
         raise NotImplementedError
 
     def get_rx_parameters(self):
@@ -322,7 +328,7 @@ class LearnableTransmissionSystem(object):
     def get_esn0_db(self):
         return self.esn0_db
 
-    def forward_tx(self, x_syms_up: torch.TensorType) -> torch.TensorType:
+    def forward_tx(self, x_syms: torch.TensorType, *tx_params) -> torch.TensorType:
         raise NotImplementedError
 
     def forward_channel(self, tx_signal: torch.TensorType) -> torch.TensorType:
@@ -330,10 +336,19 @@ class LearnableTransmissionSystem(object):
 
     def forward_rx(self, y_channel: torch.TensorType) -> torch.TensorType:
         raise NotImplementedError
+    
+    def upsample(self, xsyms: torch.TensorType) -> torch.TensorType:
+        """
+            Apply simple upsampling according to the samples-per-symbol (sps)
+            attribute
+        """
+        xsyms_up = torch.zeros((len(xsyms) * self.sps, ), dtype=xsyms.dtype)
+        xsyms_up[::self.sps] = xsyms
+        return xsyms_up
 
     # full forward pass
-    def forward(self, symbols_up: torch.TensorType) -> torch.TensorType:
-        tx  = self.forward_tx(symbols_up)
+    def forward(self, symbols: torch.TensorType) -> torch.TensorType:
+        tx  = self.forward_tx(symbols, *self.get_tx_parameters_as_list())
         ychan = self.forward_channel(tx)
         y = self.forward_rx(ychan)
         return y
@@ -405,12 +420,10 @@ class LearnableTransmissionSystem(object):
             self.optimizer.zero_grad()
 
             # Slice out batch and create tensors
-            this_a_up = symbols_up[b * self.batch_size * self.sps:(b * self.batch_size * self.sps + self.batch_size * self.sps)]
             target = torch.from_numpy(symbols[b * self.batch_size:(b * self.batch_size + self.batch_size)])
-            tx_syms_up = torch.from_numpy(this_a_up)
 
             # Run upsampled symbols through system forward model - return symbols at Rx
-            tx = self.forward_tx(tx_syms_up)
+            tx = self.forward_tx(target, *self.get_tx_parameters_as_list())
             ychan = self.forward_channel(tx)
             rx_out = self.forward_rx(ychan)
 
@@ -508,19 +521,16 @@ class LearnableTransmissionSystem(object):
         return np.concatenate(symbol_losses)
 
     def _optimize_surrogate_channel_only(self, symbols: torch.TensorType):
-        symbols_up = torch.zeros(self.sps * len(symbols), dtype=symbols.dtype)
-        symbols_up[0::self.sps] = symbols
-
         loss_per_batch = np.empty((len(symbols) // self.batch_size, ), dtype=np.float64)
 
         for b in range(len(symbols) // self.batch_size):
-            # Slice out batch and create tensors
-            tx_syms_up = symbols_up[b * self.batch_size * self.sps:(b * self.batch_size * self.sps + self.batch_size * self.sps)]
+            # Slice out batch
+            tx_syms = symbols[b * self.batch_size:(b * self.batch_size + self.batch_size)]
 
             # Gradient descent on surrogate model - use real channel as ground truth
             self.surrogate_optimizer.zero_grad(set_to_none=True)
             with torch.no_grad():
-                tx = self.forward_tx(tx_syms_up)
+                tx = self.forward_tx(tx_syms, *self.get_tx_parameters_as_list())
                 ychan_true = self.forward_channel(tx)
             ychan = self.surrogate_channel.forward(tx)
             surrogate_loss = self.calculate_surrogate_loss(ychan, ychan_true)
@@ -539,9 +549,6 @@ class LearnableTransmissionSystem(object):
         if not self.optimizer:
             raise Exception("Optimizer was not initialized. Please call the 'initialize_optimizer' method before proceeding to optimize.")
 
-        symbols_up = torch.zeros(self.sps * len(symbols), dtype=symbols.dtype)
-        symbols_up[0::self.sps] = symbols
-
         rx_loss_per_batch = np.empty((len(symbols) // self.batch_size, ), dtype=np.float64)
         tx_loss_per_batch = np.empty((len(symbols) // self.batch_size, ), dtype=np.float64)
 
@@ -553,16 +560,14 @@ class LearnableTransmissionSystem(object):
 
             # Slice out batch
             target = symbols[b * self.batch_size:(b * self.batch_size + self.batch_size)]
-            tx_syms_up = symbols_up[b * self.batch_size * self.sps:(b * self.batch_size * self.sps + self.batch_size * self.sps)]
 
-            # Run upsampled symbols through system forward model - return symbols at Rx
             # Run Tx signal through real channel
             with torch.no_grad():
-                tx = self.forward_tx(tx_syms_up)
+                tx = self.forward_tx(target, *self.get_tx_parameters_as_list())
                 ychan_true = self.forward_channel(tx)
 
             # Then use the surrogate for updating the Tx params
-            tx = self.forward_tx(tx_syms_up)
+            tx = self.forward_tx(target, *self.get_tx_parameters_as_list())
             ychan = self.surrogate_channel.forward(tx)
             rx_out_surrogate = self.forward_rx(ychan)
             tx_loss = self.calculate_loss(target, rx_out_surrogate)
@@ -663,33 +668,35 @@ class LearnableTransmissionSystem(object):
         symbols_up[0::self.sps] = symbols
 
         for b in range(len(symbols) // self.batch_size):
-            # Zero gradients
-            self.tx_optimizer.zero_grad()
-
             # Slice out batch
             target = symbols[b * self.batch_size:(b * self.batch_size + self.batch_size)]
-            tx_syms_up = symbols_up[b * self.batch_size * self.sps:(b * self.batch_size * self.sps + self.batch_size * self.sps)]
 
-            # Run upsampled symbols through system forward model - return symbols at Rx
-            tx = self.forward_tx(tx_syms_up)
+            # Run symbols through system forward model - return symbols at Rx
+            tx = self.forward_tx(target, *self.get_tx_parameters_as_list())
 
             # Apply policy - random Gaussian noise (proposed in Aoudia and Hoydis, 2019)
-            txp = torch.sqrt(1 - self.policy_noise_std**2) * tx + self.policy_noise_std * torch.randn_like(tx)
+            txp = torch.sqrt(1 - self.policy_noise_std**2) * tx +   self.policy_noise_std * torch.randn_like(tx)
 
             with torch.no_grad():
                 ychan = self.forward_channel(txp)
                 rx_out = self.forward_rx(ychan)
 
             # Calculate loss per symbol
-            loss_pr_symb = torch.square(rx_out - target)  # squared error
-            loss_per_batch[b] = loss_pr_symb.mean().item()
+            loss_avg = torch.mean(torch.square(rx_out - target))  # mean squared symbol error
+            loss_per_batch[b] = loss_avg.item()
 
-            # Calcuate the approximate gradient
-            # FIXME .... Hmm whats up with the dimensions...?
-            # TODO: Investigate using vjp from torch.func to get the partials we need...
+            # Calcuate the approximate gradient (cf. Aoudia and Hoydis, 2019 (eq 8))
+            ps_jac = torch.autograd.functional.jacobian(self.forward_tx, (target, *self.get_tx_parameters_as_list()))[1]
+            policy_jac = 2 * np.sqrt(1 - self.policy_noise_std**2) / self.policy_noise_std ** 2 * (txp - np.sqrt(1 - self.policy_noise_std**2) * tx)
+            ps_gradient = loss_avg * torch.inner(ps_jac, policy_jac)
 
-            # Apply Adam step and apply gradient.
+            # TODO: Apply Adam step
 
+            # Hmmm.... rethink the structure... again...
+            # Do I need another abstract class -> all the ones that use the same Tx structure?
+
+            # Apply gradient
+            self.pulse_shaper -= self.tx_learning_rate * ps_gradient
 
             if torch.isnan(loss_per_batch[b]):
                 print("Detected loss to be nan. Terminate training...")
@@ -699,8 +706,6 @@ class LearnableTransmissionSystem(object):
 
     def _optimize_gaussian_rl_rx(self, symbols: torch.TensorType) -> npt.ArrayLike:
         loss_per_batch = np.empty((len(symbols) // self.batch_size, ), dtype=np.float64)
-        symbols_up = torch.zeros(self.sps * len(symbols), dtype=symbols.dtype)
-        symbols_up[0::self.sps] = symbols
 
         for b in range(len(symbols) // self.batch_size):
             # Zero gradients
@@ -708,11 +713,10 @@ class LearnableTransmissionSystem(object):
 
             # Slice out batch
             target = symbols[b * self.batch_size:(b * self.batch_size + self.batch_size)]
-            tx_syms_up = symbols_up[b * self.batch_size * self.sps:(b * self.batch_size * self.sps + self.batch_size * self.sps)]
 
             # Run upsampled symbols through system forward model - return symbols at Rx
             with torch.no_grad():
-                tx = self.forward_tx(tx_syms_up)
+                tx = self.forward_tx(target, *self.get_tx_parameters_as_list())
                 ychan = self.forward_channel(tx)
 
             rx_out = self.forward_rx(ychan)
@@ -778,7 +782,8 @@ class BasicAWGN(LearnableTransmissionSystem):
             g = g / np.linalg.norm(g)
             tx_filter_init = g
 
-        self.pulse_shaper = FIRfilter(filter_weights=tx_filter_init, trainable=learn_tx)
+        # self.pulse_shaper = FIRfilter(filter_weights=tx_filter_init, trainable=learn_tx)
+        self.pulse_shaper = torch.from_numpy(tx_filter_init).requires_grad_(learn_tx)
 
         # Define rx filter - downsample to 1 sps as part of convolution (stride)
         rx_filter_init = np.zeros((rx_filter_length,))
@@ -802,18 +807,27 @@ class BasicAWGN(LearnableTransmissionSystem):
         self.constellation_scale = np.sqrt(np.average(np.square(constellation)))
 
         # Define number of symbols to discard pr. batch due to boundary effects of convolution
-        self.discard_per_batch = int((self.pulse_shaper.filter_length + self.rx_filter.filter_length) / self.sps)
+        self.discard_per_batch = int((len(self.pulse_shaper) + self.rx_filter.filter_length) / self.sps)
 
     def get_rx_parameters(self):
         return [{"params": self.rx_filter.parameters()}]
 
     def get_tx_parameters(self):
         return [{"params": self.pulse_shaper.parameters()}]
+    
+    def get_tx_parameters_as_list(self):
+        return [self.pulse_shaper]
 
-    def forward_tx(self, x_syms_up: torch.TensorType):
-        # Input is assumed to be upsampled sybmols
+    def forward_tx(self, x_syms: torch.TensorType, *tx_params):
+        # Unpack parameters
+        pulse_shaping_filter = tx_params[0]
+
+        # Input is a sequence of symbols from constellation
+        x_syms_up = self.upsample(x_syms)
+
         # Apply pulse shaper
-        x = self.pulse_shaper.forward(x_syms_up)
+        xpad = torch.nn.functional.pad(x_syms_up, (len(pulse_shaping_filter)//2, len(pulse_shaping_filter)//2))
+        x = tconvolve(xpad, pulse_shaping_filter, mode="valid")
 
         # Normalize (if self.normalization_after_tx is set, else norm_constant = 1.0)
         x = x / self.normalization_constant
@@ -865,11 +879,13 @@ class BasicAWGN(LearnableTransmissionSystem):
 
     def post_update(self):
         # Projected gradient - Normalize filters
-        self.pulse_shaper.normalize_filter()
+        with torch.no_grad():
+            self.pulse_shaper /= torch.linalg.norm(self.pulse_shaper)
+
         self.rx_filter.normalize_filter()
 
     def get_pulse_shaping_filter(self):
-        return self.pulse_shaper.get_filter()
+        return self.pulse_shaper.detach().cpu().numpy()
 
     def get_rx_filter(self):
         return self.rx_filter.get_filter()
@@ -958,11 +974,12 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
             g = g / np.linalg.norm(g)
             tx_filter_init = g
 
-        self.pulse_shaper = AllPassFilter()
-        if tx_multi_channel:
-            self.pulse_shaper = MultiChannelFIRfilter(filter_weights=tx_filter_init, trainable=learn_tx)
-        else:
-            self.pulse_shaper = FIRfilter(filter_weights=tx_filter_init, trainable=learn_tx)
+        #self.pulse_shaper = AllPassFilter()
+        #if tx_multi_channel:
+        #    self.pulse_shaper = MultiChannelFIRfilter(filter_weights=tx_filter_init, trainable=learn_tx)
+        #else:
+        #    self.pulse_shaper = FIRfilter(filter_weights=tx_filter_init, trainable=learn_tx)
+        self.pulse_shaper = torch.from_numpy(g).requires_grad_(learn_tx)
 
         # Define rx filter - downsample to 1 sps as part of convolution (stride)
         rx_filter_init = np.zeros((rx_filter_length,))
@@ -1019,7 +1036,7 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         self.normalization_constant = np.sqrt(np.average(np.square(self.constellation)) / self.sps)
 
         # Define number of symbols to discard pr. batch due to boundary effects of convolution
-        self.discard_per_batch = int((self.pulse_shaper.filter_length + self.rx_filter.filter_length) / self.sps)
+        self.discard_per_batch = int((len(self.pulse_shaper) + self.rx_filter.filter_length) / self.sps)
 
         # Calculate constellation scale
         self.constellation_scale = np.sqrt(np.average(np.square(constellation)))
@@ -1035,12 +1052,21 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         return params_to_return
 
     def get_tx_parameters(self):
-        return [{"params": self.pulse_shaper.parameters()}]
+        return [{"params": self.pulse_shaper}]
+    
+    def get_tx_parameters_as_list(self):
+        return [self.pulse_shaper]
 
-    def forward_tx(self, x_syms_up: torch.TensorType) -> torch.TensorType:
-        # Input is assumed to be upsampled sybmols
+    def forward_tx(self, x_syms: torch.TensorType, *tx_params) -> torch.TensorType:
+        # Unpack parameters
+        pulse_shaping_filter = tx_params[0]
+
+        # Input is a sequence of symbols from constellation
+        x_syms_up = self.upsample(x_syms)
+
         # Apply pulse shaper
-        x = self.pulse_shaper.forward(x_syms_up)
+        xpad = torch.nn.functional.pad(x_syms_up, (len(pulse_shaping_filter)//2, len(pulse_shaping_filter)//2))
+        x = tconvolve(xpad, pulse_shaping_filter, mode="valid")
 
         return x
 
@@ -1076,7 +1102,8 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
     def _eval(self, symbols_up: torch.TensorType, batch_size: int, decimate: bool = True):
         # Input is assumed to be upsampled sybmols
         # Apply pulse shaper
-        x = self.pulse_shaper.forward_numpy(symbols_up)
+        xpad = torch.nn.functional.pad(symbols_up, (len(self.pulse_shaper)//2, len(self.pulse_shaper)//2))
+        x = tconvolve(xpad, self.pulse_shaper, mode="valid")
 
         # Normalize
         x = x / self.normalization_constant
@@ -1112,11 +1139,13 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
 
     def post_update(self):
         # Projected gradient - Normalize filters
-        self.pulse_shaper.normalize_filter()
+        with torch.no_grad():
+            self.pulse_shaper /= torch.linalg.norm(self.pulse_shaper)
+
         self.rx_filter.normalize_filter()
 
     def get_pulse_shaping_filter(self):
-        return self.pulse_shaper.get_filter()
+        return self.pulse_shaper.detach().cpu().numpy()
 
     def get_rx_filter(self):
         return self.rx_filter.get_filter()
@@ -1278,7 +1307,10 @@ class BasicAWGNwithBWLandWDM(BasicAWGNwithBWL):
                                                          order=5,
                                                          Fs=1/self.Ts)
 
-    def forward_tx(self, x_syms_up: torch.TensorType) -> torch.TensorType:
+    def forward_tx(self, x_syms: torch.TensorType) -> torch.TensorType:
+        # Input is a sequence of symbols from constellation
+        x_syms_up = self.upsample(x_syms)
+
         # Prepare WDM channel
         rng_gen = torch.random.manual_seed(self.torch_seed)
         symbols_up_chan = torch.stack((permute_symbols(x_syms_up, self.sps, rng_gen),
@@ -1333,6 +1365,11 @@ class BasicAWGNwithBWLandWDM(BasicAWGNwithBWL):
                                        permute_symbols(symbols_up, self.sps, rng_gen)), dim=1)
 
         # Apply same pulse shaper to all channels (MultiChannelFIRfilter)
+        # Apply same pulse shaper to all channels
+        xpad = torch.nn.functional.pad(symbols_up, (len(self.pulse_shaper)//2, len(self.pulse_shaper)//2))
+        x = tconvolve(xpad, self.pulse_shaper, mode="valid")
+        # FIXME: ... ...
+        
         x = self.pulse_shaper.forward_numpy(symbols_up_chan)
         x = x / self.normalization_constant
 
@@ -1611,8 +1648,10 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
     def get_tx_parameters(self):
         return [{"params": self.pulse_shaper.parameters()}]
 
-    def forward_tx(self, x_syms_up: torch.TensorType) -> torch.TensorType:
-        # Input is assumed to be upsampled sybmols
+    def forward_tx(self, x_syms: torch.TensorType) -> torch.TensorType:
+        # Input is a sequence of symbols from constellation
+        x_syms_up = self.upsample(x_syms)
+
         # Apply pulse shaper
         x = self.pulse_shaper.forward(x_syms_up)
 
@@ -1974,7 +2013,10 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
             params_to_return.append({"params": self.dac.parameters()})
         return params_to_return
 
-    def forward_tx(self, x_syms_up: torch.TensorType) -> torch.TensorType:
+    def forward_tx(self, x_syms: torch.TensorType) -> torch.TensorType:
+        # Input is a sequence of symbols from constellation
+        x_syms_up = self.upsample(x_syms)
+
         # Apply pulse shaper
         x = self.pulse_shaper.forward(x_syms_up)
 
@@ -2289,7 +2331,10 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
         x_channels += [permute_symbols(xsyms, self.sps, rng_gen) for __ in range((n_channels - 1) // 2)]
         return x_channels
 
-    def forward_tx(self, x_syms_up: torch.TensorType) -> torch.TensorType:
+    def forward_tx(self, x_syms: torch.TensorType) -> torch.TensorType:
+        # Input is a sequence of symbols from constellation
+        x_syms_up = self.upsample(x_syms)
+
         # Prepare WDM channel
         rng_gen = torch.random.manual_seed(self.torch_seed)
 
