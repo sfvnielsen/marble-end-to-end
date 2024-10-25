@@ -440,7 +440,7 @@ class LearnableTransmissionSystem(object):
         symbols_tensor = torch.from_numpy(symbols)
 
         # Create learning rate scheduler(s)
-        if self.surrogate_lr_schedule:
+        if self.surrogate_lr_schedule and self.surrogate_learning_rate != 0.0:
             surrogate_lr_scheduler = self.create_lr_schedule(self.surrogate_optimizer, lr_schedule_str=self.surrogate_lr_schedule,
                                                              n_symbols=len(symbols), learning_rate=self.surrogate_learning_rate,
                                                              n_data_chunks=len(symbols)//n_syms_pr_chunk)
@@ -457,19 +457,20 @@ class LearnableTransmissionSystem(object):
         # Loop over the chunks of the data
         for chunk in range(len(symbols) // n_syms_pr_chunk):
             # Optimization step on the the surrogate channel
-            # NB! Always start with the surrogate channel - needs a head start to converge before updating anything else.
-            for param in self.surrogate_channel.parameters():
-                param.requires_grad = True
-            surrogate_loss = self._optimize_surrogate_channel_only(symbols_tensor[chunk*n_syms_pr_chunk:(chunk*n_syms_pr_chunk + n_syms_pr_chunk)])
+            if self.surrogate_learning_rate != 0.0:
+                # NB! Always start with the surrogate channel - needs a head start to converge before updating anything else.
+                for param in self.surrogate_channel.parameters():
+                    param.requires_grad_(True)
+                surrogate_loss = self._optimize_surrogate_channel_only(symbols_tensor[chunk*n_syms_pr_chunk:(chunk*n_syms_pr_chunk + n_syms_pr_chunk)])
 
             # Fix surrogate and optimize filters.
             for param in self.surrogate_channel.parameters():
-                param.requires_grad = False
+                param.requires_grad_(False)
             rx_symbol_loss, tx_symbol_loss = self._optimize_surrogate_full(symbols_tensor[chunk*n_syms_pr_chunk:(chunk*n_syms_pr_chunk + n_syms_pr_chunk)])
             symbol_losses.append(rx_symbol_loss)
 
             # Update stepsizes according to schedule
-            if self.surrogate_lr_schedule:
+            if self.surrogate_lr_schedule and self.surrogate_learning_rate != 0.0:
                 surrogate_lr_scheduler.step()
 
             if self.lr_schedule and (self.learn_rx or not self.tx_learning_rate):
@@ -480,10 +481,11 @@ class LearnableTransmissionSystem(object):
             
             # Print the status of the optimization (loss and lrs)
             this_surrogate_lr = self.surrogate_optimizer.param_groups[-1]['lr']
+            this_surrogate_loss = surrogate_loss[-1] if self.surrogate_learning_rate != 0.0 else np.nan
             this_rx_lr = self.optimizer.param_groups[-1]['lr']
             this_tx_lr = self.tx_optimizer.param_groups[-1]['lr'] if self.tx_learning_rate else np.nan
             print_strs = [f"Chunk {chunk} (# symbols {chunk * n_syms_pr_chunk:.2e})"]
-            print_strs.append(f"Surrogate loss: {surrogate_loss[-1]:.3f} (LR: {this_surrogate_lr:.2e})")
+            print_strs.append(f"Surrogate loss: {this_surrogate_loss:.3f} (LR: {this_surrogate_lr:.2e})")
             print_strs.append(f"Symbol loss (Rx): {rx_symbol_loss[-1]:.3f} (LR: {this_rx_lr:.2e})")
             print_strs.append(f"Symbol loss (Tx): {tx_symbol_loss[-1]:.3f} (LR: {this_tx_lr:.2e})")
             print(" - ".join(print_strs))
