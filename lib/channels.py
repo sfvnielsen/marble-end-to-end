@@ -381,7 +381,8 @@ class SurrogateChannel(torch.nn.Module):
         elif self.surrogate_type.lower() == 'wh' or \
              self.surrogate_type.lower() == 'wiener_nn' or \
              self.surrogate_type.lower() == 'hammerstein_nn' or \
-             self.surrogate_type.lower() == 'cnn':
+             self.surrogate_type.lower() == 'cnn' or \
+             self.surrogate_type.lower() == 'wiener_hammerstein_nn':
             return self.channel_model.discard_samples()
         else:
             print(f"WARNING! Unknown channel model...")

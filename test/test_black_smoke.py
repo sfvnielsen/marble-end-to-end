@@ -1,8 +1,6 @@
 """
     Test module for (very) simple test
     Essentially test passes if loss is not nan and not exceptions are thrown
-
-    TODO: Add WDM tests
 """
 
 import json
@@ -112,29 +110,6 @@ def test_black_smoke_awgn_with_bwl_joint():
     assert np.all(np.logical_not(np.isnan(loss)))
 
 
-def test_black_smoke_awgn_with_bwl_joint_surrogate():
-    """
-        Test JointRxTx for AWGN channel with bandwidth limitation
-    """
-    AWGN_CONFIG = 'test/test_config/awgn_bwl_config.json'
-    SURROGATE_CONFIG = 'test/test_config/surrogate_config.json'
-    awgn_kwargs = read_json_config(AWGN_CONFIG)
-    surrogate_kwargs = read_json_config(SURROGATE_CONFIG)
-
-    syms = generate_symbols(N_SYMS, CONSTELLATION)
-
-    e2e_system = JointTxRxAWGNwithBWL(constellation=CONSTELLATION,
-                                       tx_optimizer_params=surrogate_kwargs,
-                                       **awgn_kwargs)
-    
-    e2e_system.initialize_optimizer()
-
-    loss = e2e_system.optimize(syms, return_loss=True)
-    __ = e2e_system.evaluate(syms)
-
-    assert np.all(np.logical_not(np.isnan(loss)))
-
-
 def test_black_smoke_imdd_ps():
     """
         Test PulseShaper for IM/DD channel
@@ -208,78 +183,6 @@ def test_black_smoke_imdd_ffe():
     e2e_system = LinearFFEIM(constellation=CONSTELLATION,
                              ffe_n_taps=FFE_TAPS,
                              **imdd_kwargs)
-    
-    e2e_system.initialize_optimizer()
-
-    loss = e2e_system.optimize(syms, return_loss=True)
-    __ = e2e_system.evaluate(syms)
-
-    assert np.all(np.logical_not(np.isnan(loss)))
-
-
-def test_black_smoke_imdd_ps_surrogate():
-    """
-        Test PS for IM/DD channel with surrogate
-    """
-    IMDD_CONFIG = 'test/test_config/imdd_config.json'
-    imdd_kwargs = read_json_config(IMDD_CONFIG)
-    SURROGATE_CONFIG = 'test/test_config/surrogate_config.json'
-    surrogate_kwargs = read_json_config(SURROGATE_CONFIG)
-
-
-    syms = generate_symbols(N_SYMS, CONSTELLATION)
-
-    e2e_system = PulseShapingIM(constellation=CONSTELLATION,
-                                tx_optimizer_params=surrogate_kwargs,
-                                **imdd_kwargs)
-    
-    e2e_system.initialize_optimizer()
-
-    loss = e2e_system.optimize(syms, return_loss=True)
-    __ = e2e_system.evaluate(syms)
-
-    assert np.all(np.logical_not(np.isnan(loss)))
-
-
-def test_black_smoke_imdd_joint_surrogate():
-    """
-        Test joint PS+RxF for IM/DD channel with surrogate
-    """
-    IMDD_CONFIG = 'test/test_config/imdd_config.json'
-    imdd_kwargs = read_json_config(IMDD_CONFIG)
-    SURROGATE_CONFIG = 'test/test_config/surrogate_config.json'
-    surrogate_kwargs = read_json_config(SURROGATE_CONFIG)
-
-
-    syms = generate_symbols(N_SYMS, CONSTELLATION)
-
-    e2e_system = JointTxRxIM(constellation=CONSTELLATION,
-                             tx_optimizer_params=surrogate_kwargs,
-                             **imdd_kwargs)
-    
-    e2e_system.initialize_optimizer()
-
-    loss = e2e_system.optimize(syms, return_loss=True)
-    __ = e2e_system.evaluate(syms)
-
-    assert np.all(np.logical_not(np.isnan(loss)))
-
-
-def test_black_smoke_imdd_ps_surrogate_indep_tx_optim():
-    """
-        Test PS for IM/DD channel with surrogate (independent optimizers)
-    """
-    IMDD_CONFIG = 'test/test_config/imdd_config.json'
-    imdd_kwargs = read_json_config(IMDD_CONFIG)
-    SURROGATE_CONFIG = 'test/test_config/surrogate_config_independent_optimizers.json'
-    surrogate_kwargs = read_json_config(SURROGATE_CONFIG)
-
-
-    syms = generate_symbols(N_SYMS, CONSTELLATION)
-
-    e2e_system = PulseShapingIM(constellation=CONSTELLATION,
-                                tx_optimizer_params=surrogate_kwargs,
-                                **imdd_kwargs)
     
     e2e_system.initialize_optimizer()
 

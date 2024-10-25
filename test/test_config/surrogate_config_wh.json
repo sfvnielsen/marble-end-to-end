@@ -1,0 +1,14 @@
+{
+    "type": "surrogate",
+    "chunk_size_pct": 0.1,
+    "tx_learning_rate": null,
+    "tx_lr_schedule": null,
+    "surrogate_learning_rate": 5e-2,
+    "surrogate_lr_schedule": "expdecay",
+    "surrogate_channel_kwargs": {
+        "type": "wiener_hammerstein_nn",
+        "n_lags": 101,
+        "n_hidden_units": 15,
+        "n_hidden_layers": 5
+    }
+}

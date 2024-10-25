@@ -490,6 +490,42 @@ class LearnableTransmissionSystem(object):
 
         return np.concatenate(symbol_losses)
 
+    def optimize_surrogate(self, symbols: npt.ArrayLike, return_loss=False):
+        if self.tx_optimizer_type != "surrogate":
+            raise ValueError("This is not a surrogate system...")
+
+        n_syms_pr_chunk = int(len(symbols) * self.surrogate_chunk_size_pct)
+        surrogate_loss_chunks = []
+        symbols_tensor = torch.from_numpy(symbols)
+
+        # Create learning rate scheduler(s)
+        if self.surrogate_lr_schedule:
+            surrogate_lr_scheduler = self.create_lr_schedule(self.surrogate_optimizer, lr_schedule_str=self.surrogate_lr_schedule,
+                                                             n_symbols=len(symbols), learning_rate=self.surrogate_learning_rate,
+                                                             n_data_chunks=len(symbols)//n_syms_pr_chunk)
+
+        # Loop over the chunks of the data
+        for chunk in range(len(symbols) // n_syms_pr_chunk):
+            # Optimization step on the the surrogate channel
+            for param in self.surrogate_channel.parameters():
+                param.requires_grad = True
+            surrogate_loss = self._optimize_surrogate_channel_only(symbols_tensor[chunk*n_syms_pr_chunk:(chunk*n_syms_pr_chunk + n_syms_pr_chunk)])
+
+            # Update stepsizes according to schedule
+            if self.surrogate_lr_schedule:
+                surrogate_lr_scheduler.step()
+            
+            # Print the status of the optimization (loss and lrs)
+            this_surrogate_lr = self.surrogate_optimizer.param_groups[-1]['lr']
+            print_strs = [f"Chunk {chunk} (# symbols {chunk * n_syms_pr_chunk:.2e})"]
+            print_strs.append(f"Surrogate loss: {surrogate_loss[-1]:.3f} (LR: {this_surrogate_lr:.2e})")
+            print(" - ".join(print_strs))
+            surrogate_loss_chunks.append(surrogate_loss)
+
+        if return_loss:
+            return np.concatenate(surrogate_loss_chunks)
+
+
     def _optimize_surrogate_channel_only(self, symbols: torch.TensorType):
         symbols_up = torch.zeros(self.sps * len(symbols), dtype=symbols.dtype)
         symbols_up[0::self.sps] = symbols
