@@ -1020,6 +1020,46 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
 
     def get_rx_filter(self):
         return self.rx_filter.get_filter()
+    
+    def evaluate_tx_gradient_error(self, symbols: npt.ArrayLike):
+        """
+            Surrogate method:
+            Run forward pass through real channel and surrogate channel
+            Run backward to Tx parameters and calculate the norm difference between gradients.
+        """
+
+        # Up-sample the symbols
+        target = torch.from_numpy(symbols)
+        tx_syms_up = torch.zeros((len(target) * self.sps,), dtype=target.dtype)
+        tx_syms_up[::self.sps] = target
+
+        # Forward pass with real channel
+        tx = self.forward_tx(tx_syms_up)
+        ychan = self.forward_channel(tx)
+        rx_out = self.forward_rx(ychan)
+
+        # Calculate loss
+        loss = self.calculate_loss(target, rx_out)
+
+        # Run backpropagation and log gradient
+        loss.backward()
+        tx_gradient = self.pulse_shaper.conv_weights.grad.view()
+        self.pulse_shaper.zero_grad(set_to_none=True)
+
+        # Forward pass with surrogate channel
+        tx = self.forward_tx(tx_syms_up)
+        ychan = self.surrogate_channel.forward(tx)
+        rx_out = self.forward_rx(ychan)
+
+        # Calculate loss
+        loss = self.calculate_loss(target, rx_out)
+
+        # Run backpropagation and log gradient
+        loss.backward()
+        tx_gradient_surrogate = self.pulse_shaper.conv_weights.grad.view()
+        self.pulse_shaper.zero_grad(set_to_none=True)
+
+        return torch.linalg.norm(tx_gradient - tx_gradient_surrogate).item()
 
 
 class PulseShapingAWGNwithBWL(BasicAWGNwithBWL):
@@ -1963,6 +2003,46 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
 
     def get_rx_filter(self):
         return self.rx_filter.get_filter()
+    
+    def evaluate_tx_gradient_error(self, symbols: npt.ArrayLike):
+        """
+            Surrogate method:
+            Run forward pass through real channel and surrogate channel
+            Run backward to Tx parameters and calculate the norm difference between gradients.
+        """
+
+        # Up-sample the symbols
+        target = torch.from_numpy(symbols)
+        tx_syms_up = torch.zeros((len(target) * self.sps,), dtype=target.dtype)
+        tx_syms_up[::self.sps] = target
+
+        # Forward pass with real channel
+        tx = self.forward_tx(tx_syms_up)
+        ychan = self.forward_channel(tx)
+        rx_out = self.forward_rx(ychan)
+
+        # Calculate loss
+        loss = self.calculate_loss(target, rx_out)
+
+        # Run backpropagation and log gradient
+        loss.backward()
+        tx_gradient = self.pulse_shaper.conv_weights.grad
+        self.pulse_shaper.conv_weights.grad = None
+
+        # Forward pass with surrogate channel
+        tx = self.forward_tx(tx_syms_up)
+        ychan = self.surrogate_channel.forward(tx)
+        rx_out = self.forward_rx(ychan)
+
+        # Calculate loss
+        loss = self.calculate_loss(target, rx_out)
+
+        # Run backpropagation and log gradient
+        loss.backward()
+        tx_gradient_surrogate = self.pulse_shaper.conv_weights.grad
+        self.pulse_shaper.conv_weights.grad = None
+
+        return torch.linalg.norm(tx_gradient - tx_gradient_surrogate).item()
 
 
 class PulseShapingIM(IntensityModulationChannel):

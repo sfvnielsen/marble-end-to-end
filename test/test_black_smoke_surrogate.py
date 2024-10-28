@@ -167,3 +167,28 @@ def test_black_smoke_imdd_joint_surrogate_whnn_only():
     loss = e2e_system.optimize_surrogate(syms, return_loss=True)
 
     assert np.all(np.logical_not(np.isnan(loss)))
+
+def test_black_smoke_imdd_joint_surrogate_eval_grad_error():
+    """
+        Test joint PS+RxF for IM/DD channel with surrogate
+        Test the evaluate_gradient_error method
+    """
+    IMDD_CONFIG = 'test/test_config/imdd_config.json'
+    imdd_kwargs = read_json_config(IMDD_CONFIG)
+    SURROGATE_CONFIG = 'test/test_config/surrogate_config_wh.json'
+    surrogate_kwargs = read_json_config(SURROGATE_CONFIG)
+
+
+    syms = generate_symbols(N_SYMS, CONSTELLATION)
+
+    e2e_system = JointTxRxIM(constellation=CONSTELLATION,
+                             tx_optimizer_params=surrogate_kwargs,
+                             **imdd_kwargs)
+    
+    e2e_system.initialize_optimizer()
+
+    e2e_system.optimize_surrogate(syms)
+
+    grad_error = e2e_system.evaluate_tx_gradient_error(syms)
+
+    assert not np.isnan(grad_error)
