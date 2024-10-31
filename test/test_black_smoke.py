@@ -2,7 +2,7 @@
     Test module for (very) simple test
     Essentially test passes if loss is not nan and not exceptions are thrown
 
-    TODO: Add WDM tests
+    Standard variations
 """
 
 import json
@@ -10,8 +10,7 @@ import numpy as np
 
 from lib.systems import PulseShapingAWGN, RxFilteringAWGN, PulseShapingAWGNwithBWL,\
                         JointTxRxAWGNwithBWL, PulseShapingIM, RxFilteringIM, LinearFFEIM,\
-                        JointTxRxIM,\
-                        JointTxRxAWGNwithBWLandWDM, JointTxRxIMwithWDM
+                        JointTxRxIM
 
 NUMPY_SEED = 1235246
 N_SYMS = int(1e4)
@@ -217,44 +216,16 @@ def test_black_smoke_imdd_ffe():
     assert np.all(np.logical_not(np.isnan(loss)))
 
 
-def test_black_smoke_imdd_ps_surrogate():
+def test_black_smoke_imdd_joint_ssfm():
     """
-        Test PS for IM/DD channel with surrogate
+        Test JointTxRx for IM/DD channel with SSFM
     """
-    IMDD_CONFIG = 'test/test_config/imdd_config.json'
+    IMDD_CONFIG = 'test/test_config/imdd_ssfm_config.json'
     imdd_kwargs = read_json_config(IMDD_CONFIG)
-    SURROGATE_CONFIG = 'test/test_config/surrogate_config.json'
-    surrogate_kwargs = read_json_config(SURROGATE_CONFIG)
-
-
-    syms = generate_symbols(N_SYMS, CONSTELLATION)
-
-    e2e_system = PulseShapingIM(constellation=CONSTELLATION,
-                                tx_optimizer_params=surrogate_kwargs,
-                                **imdd_kwargs)
-    
-    e2e_system.initialize_optimizer()
-
-    loss = e2e_system.optimize(syms, return_loss=True)
-    __ = e2e_system.evaluate(syms)
-
-    assert np.all(np.logical_not(np.isnan(loss)))
-
-
-def test_black_smoke_imdd_joint_surrogate():
-    """
-        Test joint PS+RxF for IM/DD channel with surrogate
-    """
-    IMDD_CONFIG = 'test/test_config/imdd_config.json'
-    imdd_kwargs = read_json_config(IMDD_CONFIG)
-    SURROGATE_CONFIG = 'test/test_config/surrogate_config.json'
-    surrogate_kwargs = read_json_config(SURROGATE_CONFIG)
-
 
     syms = generate_symbols(N_SYMS, CONSTELLATION)
 
     e2e_system = JointTxRxIM(constellation=CONSTELLATION,
-                             tx_optimizer_params=surrogate_kwargs,
                              **imdd_kwargs)
     
     e2e_system.initialize_optimizer()
@@ -264,66 +235,3 @@ def test_black_smoke_imdd_joint_surrogate():
 
     assert np.all(np.logical_not(np.isnan(loss)))
 
-
-def test_black_smoke_imdd_ps_surrogate_indep_tx_optim():
-    """
-        Test PS for IM/DD channel with surrogate (independent optimizers)
-    """
-    IMDD_CONFIG = 'test/test_config/imdd_config.json'
-    imdd_kwargs = read_json_config(IMDD_CONFIG)
-    SURROGATE_CONFIG = 'test/test_config/surrogate_config_independent_optimizers.json'
-    surrogate_kwargs = read_json_config(SURROGATE_CONFIG)
-
-
-    syms = generate_symbols(N_SYMS, CONSTELLATION)
-
-    e2e_system = PulseShapingIM(constellation=CONSTELLATION,
-                                tx_optimizer_params=surrogate_kwargs,
-                                **imdd_kwargs)
-    
-    e2e_system.initialize_optimizer()
-
-    loss = e2e_system.optimize(syms, return_loss=True)
-    __ = e2e_system.evaluate(syms)
-
-    assert np.all(np.logical_not(np.isnan(loss)))
-
-
-def test_black_smoke_awgn_wdm_joint():
-    """
-        Test JointTxRx for AWGN channel with BWL and WDM
-    """
-    IMDD_CONFIG = 'test/test_config/awgn_bwl_wdm_config.json'
-    imdd_kwargs = read_json_config(IMDD_CONFIG)
-
-    syms = generate_symbols(N_SYMS, CONSTELLATION)
-
-    e2e_system = JointTxRxAWGNwithBWLandWDM(constellation=CONSTELLATION,
-                                            **imdd_kwargs)
-    
-    e2e_system.initialize_optimizer()
-
-    loss = e2e_system.optimize(syms, return_loss=True)
-    __ = e2e_system.evaluate(syms)
-
-    assert np.all(np.logical_not(np.isnan(loss)))
-
-
-def test_black_smoke_imdd_wdm_joint():
-    """
-        Test JointTxRx for IM/DD channel with WDM
-    """
-    IMDD_CONFIG = 'test/test_config/imdd_wdm_config.json'
-    imdd_kwargs = read_json_config(IMDD_CONFIG)
-
-    syms = generate_symbols(N_SYMS, CONSTELLATION)
-
-    e2e_system = JointTxRxIMwithWDM(constellation=CONSTELLATION,
-                                    **imdd_kwargs)
-    
-    e2e_system.initialize_optimizer()
-
-    loss = e2e_system.optimize(syms, return_loss=True)
-    __ = e2e_system.evaluate(syms)
-
-    assert np.all(np.logical_not(np.isnan(loss)))

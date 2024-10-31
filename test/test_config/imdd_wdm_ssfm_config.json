@@ -5,13 +5,17 @@
     "batch_size": 1000,
     "rx_filter_length": 65,
     "tx_filter_length": 65,
-    "fiber_type": "smf",
+    "wdm_channel_spacing_hz": 150e9,
+    "wdm_channel_selection_rel_cutoff": 1.1,
+    "fiber_type": "ssfm",
     "fiber_config": {
         "attenuation": 0.2,
         "carrier_wavelength": 1270,
         "zero_dispersion_wavelength": 1310,
         "dispersion_slope": 0.092,
-        "fiber_length": 0.0
+        "fiber_length": 2.0,
+        "step_length": 0.5,
+        "gamma": 1.3
     },
     "photodiode_config": {
         "responsivity": 1.0,

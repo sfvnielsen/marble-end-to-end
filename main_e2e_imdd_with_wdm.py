@@ -36,23 +36,23 @@ if __name__ == "__main__":
     figprefix = f"{FIGPREFIX}"
     n_symbols_train = int(1e6)
     n_symbols_val = int(1e6)  # number of symbols used for SER calculation
-    samples_per_symbol = 8
+    samples_per_symbol = 8 
     baud_rate = int(100e9)
     mod_order = 4  # PAM
     rrc_rolloff = 0.01
-    tx_filter_length = 15
-    rx_filter_length = 15
+    tx_filter_length = 65
+    rx_filter_length = 65
     eval_adc_bitres = 5
     eval_dac_bitres = 5
-    lr_schedule = 'expdecay'
+    lr_schedule = 'oneclr'
 
     # Configuration for DAC (and ADC)
     dac_config = {
-        'peak_to_peak_voltage': 4.0,
-        'bias_voltage': 'negative_vpp',
+        'peak_to_peak_voltage': 2.0,
+        'bias_voltage': 'positive_vpp',
         'bwl_cutoff': 45e9,  # Hz
         'learnable_normalization': True,
-        'learnable_bias': True,
+        'learnable_bias': False,
         'filter_type': 'bessel',
         'lpf_order': 5
     }
@@ -60,21 +60,21 @@ if __name__ == "__main__":
     adc_bwl_cutoff_hz = 45e9  # same as dac
 
     # Configuration of electro absorption modulator
-    modulator_type = 'eam'
+    modulator_type = 'ideal'
     modulator_config = {
-        'laser_power_dbm': -4.0,
-        'linewidth_enhancement': 2.0,
-        'linear_absorption': False
+        'laser_power_dbm': -11.0,
     }
 
     # Channel configuration - single model fiber
-    smf_config = {
-        'fiber_length': 0.5,
+    fiber_type = 'ssfm'
+    fiber_config = {
+        'fiber_length': 1.0,
         'attenuation': 0.0,
         'carrier_wavelength': 1270,
         'zero_dispersion_wavelength': 1310,
-        'dispersion_slope': 0.092
-        # 'dispersion_parameter': 16.0
+        'dispersion_slope': 0.092,
+        'gamma': 1.3,
+        'step_length': 0.25
     }
 
     # Configuration of the photodiode
@@ -101,7 +101,7 @@ if __name__ == "__main__":
     random_obj = np.random.default_rng(seed=seed)
 
     # Optimization parameters
-    learning_rate = 1e-2
+    learning_rate = 1e-3
     batch_size = 1000
 
     # Initialize learnable transmission system(s)
@@ -112,7 +112,7 @@ if __name__ == "__main__":
                                      wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                                      tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, lr_schedule=lr_schedule,
                                      tx_filter_init_type='rrc', rx_filter_init_type='rrc',
-                                     smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
+                                     fiber_config=fiber_config, fiber_type=fiber_type, photodiode_config=photodiode_config, modulator_config=modulator_config,
                                      modulator_type=modulator_type, dac_config=dac_config, adc_bwl_cutoff_hz=adc_bwl_cutoff_hz)
 
     ps_sys = PulseShapingIMwithWDM(sps=samples_per_symbol, baud_rate=baud_rate,
@@ -122,7 +122,7 @@ if __name__ == "__main__":
                                    wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                                    tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, lr_schedule=lr_schedule,
                                    tx_filter_init_type='rrc', rx_filter_init_type='rrc',
-                                   smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
+                                   fiber_config=fiber_config, fiber_type=fiber_type, photodiode_config=photodiode_config, modulator_config=modulator_config,
                                    modulator_type=modulator_type, dac_config=dac_config, adc_bwl_cutoff_hz=adc_bwl_cutoff_hz)
 
     rxf_sys = RxFilteringIMwithWDM(sps=samples_per_symbol, baud_rate=baud_rate,
@@ -132,7 +132,7 @@ if __name__ == "__main__":
                                    wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                                    tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, lr_schedule=lr_schedule,
                                    tx_filter_init_type='rrc', rx_filter_init_type='rrc',
-                                   smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
+                                   fiber_config=fiber_config, fiber_type=fiber_type, photodiode_config=photodiode_config, modulator_config=modulator_config,
                                    modulator_type=modulator_type, dac_config=dac_config, adc_bwl_cutoff_hz=adc_bwl_cutoff_hz)
     
     ffe_sys = LinearFFEIMwithWDM(sps=samples_per_symbol, baud_rate=baud_rate,
@@ -142,7 +142,7 @@ if __name__ == "__main__":
                                  wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                                  tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, lr_schedule=lr_schedule,
                                  tx_filter_init_type='rrc', rx_filter_init_type='rrc',
-                                 smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
+                                 fiber_config=fiber_config, fiber_type=fiber_type, photodiode_config=photodiode_config, modulator_config=modulator_config,
                                  modulator_type=modulator_type, dac_config=dac_config, adc_bwl_cutoff_hz=adc_bwl_cutoff_hz)
     
 

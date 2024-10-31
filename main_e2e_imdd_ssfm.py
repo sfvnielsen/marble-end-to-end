@@ -1,5 +1,6 @@
 """
     Script that runs end-to-end learning, calculates SER and plots system response
+    Split-step Fourier method as fiber model
 """
 
 import os
@@ -31,15 +32,15 @@ FIGPREFIX = 'e2e_imdd'
 
 if __name__ == "__main__":
     # Define simulation parameters
-    save_figures = True
+    save_figures = False
     n_symbols_train = int(1e6)
     n_symbols_val = int(1e6)  # number of symbols used for SER calculation
     samples_per_symbol = 4
     baud_rate = int(100e9)
     mod_order = 4  # PAM
     rrc_rolloff = 0.01
-    learn_tx, tx_filter_length = True, 25
-    learn_rx, rx_filter_length = True, 25
+    learn_tx, tx_filter_length = True, 65
+    learn_rx, rx_filter_length = True, 65
     eval_adc_bitres = 5
     eval_dac_bitres = 5
     lr_schedule = 'oneclr'
@@ -66,15 +67,18 @@ if __name__ == "__main__":
         'linear_absorption': False
     }
 
-    # Channel configuration - single model fiber
-    fiber_type = "smf"
+    # Channel configuration - split-step fourier method (non-linear fiber)
+    fiber_type = "ssfm"
     fiber_config = {
-        'fiber_length': 0.5,
-        'attenuation': 0.0,
+        'fiber_length': 1.0,
+        'attenuation': 0.2,
         'carrier_wavelength': 1270,
         'zero_dispersion_wavelength': 1310,
-        'dispersion_slope': 0.092
+        'dispersion_slope': 0.092,
+        'gamma': 1.3,
+        'step_length': 0.25
     }
+
 
     # Configuration of the photodiode
     photodiode_config = {
@@ -89,7 +93,7 @@ if __name__ == "__main__":
     if learn_tx and learn_rx:
         figtitles = 'both'
 
-    figprefix = f"{FIGPREFIX}_{figtitles}_vpp{dac_config['peak_to_peak_voltage']}_chanlength{fiber_config['fiber_length']}"
+    figprefix = f"{FIGPREFIX}_{figtitles}_vpp{dac_config['peak_to_peak_voltage']}_ssfm_chanlength{fiber_config['fiber_length']}"
 
     if not os.path.exists(FIGURE_DIR):
         os.mkdir(FIGURE_DIR)
@@ -112,8 +116,7 @@ if __name__ == "__main__":
                                              learn_tx=learn_tx, learn_rx=learn_rx, rrc_rolloff=rrc_rolloff,
                                              tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, lr_schedule=lr_schedule,
                                              adc_bwl_cutoff_hz=adc_bwl_cutoff_hz, adc_bitres=None, adc_lp_filter_type=adc_filter_type,
-                                             dac_minmax_norm='auto',
-                                             tx_filter_init_type='rrc', rx_filter_init_type='rrc',
+                                             dac_minmax_norm='auto', tx_filter_init_type='rrc', rx_filter_init_type='rrc',
                                              fiber_config=fiber_config, fiber_type=fiber_type,
                                              photodiode_config=photodiode_config, modulator_config=modulator_config,
                                              modulator_type=modulator_type, dac_config=dac_config)
@@ -151,8 +154,7 @@ if __name__ == "__main__":
                                   learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                   rrc_rolloff=rrc_rolloff, ffe_n_taps=rx_filter_length,
                                   tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, lr_schedule=lr_schedule,
-                                  adc_bitres=None, dac_minmax_norm='auto',
-                                  tx_filter_init_type='rrc', rx_filter_init_type='rrc',
+                                  adc_bitres=None, dac_minmax_norm='auto', tx_filter_init_type='rrc', rx_filter_init_type='rrc',
                                   fiber_config=fiber_config, fiber_type=fiber_type,
                                   photodiode_config=photodiode_config, modulator_config=modulator_config,
                                   modulator_type=modulator_type, dac_config=dac_config, adc_bwl_cutoff_hz=adc_bwl_cutoff_hz)
@@ -295,20 +297,6 @@ if __name__ == "__main__":
     axs[1, 0].set_ylabel('Voltage')
     fig.tight_layout()
     fig.suptitle('DAC normalization')
-
-
-    # Plot channel phase response
-    f, channelH = imdd_system.channel.get_fq_filter(len(a) * samples_per_symbol)
-    fig, ax = plt.subplots(figsize=FIGSIZE)
-    ax.plot(f, np.unwrap(np.angle(channelH)))
-    ax.set_xlabel('Frequency')
-    ax.set_ylabel('Phase response')
-    ax.set_title(f"Phase response of channel. Fiber length: {fiber_config['fiber_length']} [km]")
-    ax.grid()
-
-    if save_figures:
-        fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_channel_phase.eps"), format='eps')
-        fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_channel_phase.png"), dpi=DPI)
 
     # Eyediagram
     fig, ax = plt.subplots(figsize=FIGSIZE)

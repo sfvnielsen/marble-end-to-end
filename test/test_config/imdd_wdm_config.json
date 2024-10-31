@@ -7,7 +7,8 @@
     "tx_filter_length": 65,
     "wdm_channel_spacing_hz": 150e9,
     "wdm_channel_selection_rel_cutoff": 1.1,
-    "smf_config": {
+    "fiber_type": "smf",
+    "fiber_config": {
         "attenuation": 0.2,
         "carrier_wavelength": 1270,
         "zero_dispersion_wavelength": 1310,

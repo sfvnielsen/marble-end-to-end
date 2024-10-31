@@ -74,11 +74,95 @@ class SingleModeFiber(object):
         return fftshift(freq).numpy(), self._calculate_fq_filter(freq).detach().numpy()
 
     def forward(self, x: torch.Tensor):
-        # FIXME: Add zero padding before doing fft?
         Nfft = len(x)
         omega = 2 * torch.pi * self.Fs * fftfreq(Nfft)
         xo = ifft(fft(x) * self._calculate_fq_filter(omega))
         return xo
+
+
+class SplitStepFourierFiber(object):
+    """
+        SSFM with chromatic dispersion
+
+        Heavily inspired by Edson Porto Silva's OptiCommPy
+        https://github.com/edsonportosilva/OptiCommPy
+
+        Inputs to constructor.
+
+        fiber_length in [km]
+        attenutation in [dB / km]
+        carrier_wavelength in [nm]
+        Fs sampling frequency in Hz
+        step_length in [km]
+        gamma (fiber non-linear parameter) in [1/W/km]
+
+        Dispersion is specified either as
+
+        dispersion_parameter in [ps / (nm * km)]
+
+        or
+
+        dispersion_slope in [ps / (nm^2 * km)]
+        zero_dispersion_wavelength in [nm]
+
+        No amplification is implemented here.
+
+    """
+    SPEED_OF_LIGHT = 299792458  # [m / s]
+
+    def __init__(self, fiber_length, attenuation, carrier_wavelength, Fs,
+                 step_length, gamma,
+                 dispersion_parameter=None, dispersion_slope=None, zero_dispersion_wavelength=None) -> None:
+
+        # Add properties from constructor
+        self.fiber_length = fiber_length
+        self.attenuation = attenuation
+        self.carrier_wavelength = carrier_wavelength
+        self.Fs = Fs
+        self.step_length = step_length
+        assert step_length < self.fiber_length
+        self.gamma = gamma
+        self.n_steps = int(np.floor(self.fiber_length / self.step_length))
+
+        # Check dispersion arguments
+        if dispersion_parameter is None and ((dispersion_slope is None) or (zero_dispersion_wavelength is None)):
+            raise ValueError("Dispersion parameters cannot all be None...")
+
+        # Calculate parameters based on inputs
+        self.dispersion_parameter = dispersion_parameter
+        if self.dispersion_parameter is None:
+            # Convert zero_dispersion_wavelength and carrier_wavelength to dispersion parameter (cf. Liang and Kahn, 2023)
+            self.dispersion_parameter = dispersion_slope * (carrier_wavelength - zero_dispersion_wavelength**4 / carrier_wavelength**3)  # [ps / (nm * km)]
+
+        self.alpha = self.attenuation / (10 * np.log10(np.exp(1.0)))  # [1/km]
+        carrier_wavelength_in_km = self.carrier_wavelength / (1e9 * 1e3)  # from nm to km
+        self.beta2 = -(self.dispersion_parameter * (carrier_wavelength_in_km)**2) / (2 * torch.pi * self.SPEED_OF_LIGHT / 1e3)  # [s^2/km]
+
+    def _calculate_linear_filter(self, omega):
+        # half step length due to the filter being applied twice pr step.
+        return torch.exp(-self.alpha/2 * self.step_length / 2 + 1j * (self.beta2 / 2) * (omega**2) * self.step_length / 2)
+
+    def get_fq_filter(self, signal_length):
+        freq = self.Fs * fftfreq(signal_length)
+        return fftshift(freq).numpy(), self._calculate_linear_filter(freq).detach().numpy()
+
+    def forward(self, x: torch.Tensor):
+        Nfft = len(x)
+        omega = 2 * torch.pi * self.Fs * fftfreq(Nfft)
+        linear_operator = self._calculate_linear_filter(omega)
+        e = fft(x)
+        for __ in range(self.n_steps):
+            # Linear step in frequency domain
+            e = e * linear_operator
+
+            # Non-linear step in time-domain
+            e = ifft(e)
+            e = e * torch.exp(1j * self.gamma * (e * torch.conj(e)) * self.step_length)
+
+            # Second linear step in frequency domain
+            e = fft(e) * linear_operator
+
+        return ifft(e) * np.exp(0)
 
 
 class WienerHammersteinChannel(torch.nn.Module):

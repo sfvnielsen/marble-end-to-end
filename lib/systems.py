@@ -18,7 +18,7 @@ from .utility import find_max_variance_sample, symbol_sync, permute_symbols
 from .devices import ElectroAbsorptionModulator, MyNonLinearEAM, Photodiode,\
                      IdealLinearModulator, DigitalToAnalogConverter, AnalogToDigitalConverter,\
                      MachZehnderModulator
-from .channels import SingleModeFiber, SurrogateChannel
+from .channels import SingleModeFiber, SplitStepFourierFiber, SurrogateChannel
 from .equalization import LinearFeedForwardEqualiser
 
 # TODO: Implement GPU support
@@ -1659,16 +1659,16 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
 
         symbols -> upsampling -> pulse shaping -> dac -> eam
                                                           |
-                                                        channel (SMF)
+                                                        channel (SMF or SSFM)
                                                           |
-          <-  symbol decision <-  filtering <- adc <- photodiode
+        symbols hat <-symbol norm <- filtering <- adc <- photodiode
 
     """
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  learn_rx, learn_tx, rx_filter_length, tx_filter_length,
-                 smf_config: dict, photodiode_config: dict, modulator_config: dict,
+                 fiber_config: dict, photodiode_config: dict, modulator_config: dict,
                  dac_config: dict, adc_bwl_cutoff_hz: float | None, modulator_type='eam',
-                 equaliser_config: dict | None = None,
+                 equaliser_config: dict | None = None, fiber_type='smf',
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  rrc_rolloff=0.5, adc_bitres=None, dac_minmax_norm: float | str = 'auto',
                  lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000),
@@ -1768,12 +1768,17 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         elif modulator_type == 'nonlin_eam':
             self.modulator = MyNonLinearEAM(**modulator_config)
         else:
-            raise Exception(f"Unknown modulator type '{modulator_type}'. Valid options are: 'ideal', 'eam' or 'nonlin_eam'")
+            raise ValueError(f"Unknown modulator type '{modulator_type}'. Valid options are: 'ideal', 'eam', 'mzm' or 'nonlin_eam'")
 
-        # Define channel - single mode fiber with chromatic dispersion
+        # Define channel (fiber model)
         self.channel = AllPassFilter()
-        if smf_config:
-            self.channel = SingleModeFiber(Fs=1/self.Ts, **smf_config)
+        self.fiber_type = fiber_type.lower()
+        if self.fiber_type == "smf":
+            self.channel = SingleModeFiber(Fs=1/self.Ts, **fiber_config)
+        elif self.fiber_type == "ssfm":
+            self.channel = SplitStepFourierFiber(Fs=1/self.Ts, **fiber_config)
+        else:
+            raise ValueError(f"Unknown fiber type '{fiber_type}'. Valid options are: 'smf' or 'ssfm'")
 
         # Define photodiode
         self.photodiode = Photodiode(bandwidth=adc_bwl_cutoff_hz if adc_bwl_cutoff_hz is not None else baud_rate * 0.5,
@@ -1933,8 +1938,8 @@ class PulseShapingIM(IntensityModulationChannel):
     """
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length,
-                 smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_config: dict, adc_bwl_cutoff_hz, modulator_type='eam',
+                 fiber_config: dict, photodiode_config: dict, modulator_config: dict,
+                 dac_config: dict, adc_bwl_cutoff_hz, modulator_type='eam', fiber_type='smf',
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc', rrc_rolloff=0.5,
                  dac_minmax_norm: float | str = 'auto', adc_bitres=None, adc_lp_filter_type='bessel',
                  lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000),
@@ -1942,8 +1947,8 @@ class PulseShapingIM(IntensityModulationChannel):
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
                          learn_rx=False, learn_tx=True, rx_filter_length=rx_filter_length,
-                         tx_filter_length=tx_filter_length,
-                         smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
+                         tx_filter_length=tx_filter_length, fiber_config=fiber_config, fiber_type=fiber_type,
+                         photodiode_config=photodiode_config, modulator_config=modulator_config,
                          modulator_type=modulator_type, dac_config=dac_config,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          adc_bwl_cutoff_hz=adc_bwl_cutoff_hz,
@@ -1960,17 +1965,17 @@ class RxFilteringIM(IntensityModulationChannel):
     """
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length,
-                 smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_config: dict, adc_bwl_cutoff_hz,
-                 dac_minmax_norm: float | str = 'auto',
-                 modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 fiber_config: dict, photodiode_config: dict, modulator_config: dict,
+                 dac_config: dict, adc_bwl_cutoff_hz, dac_minmax_norm: float | str = 'auto',
+                 modulator_type='eam', fiber_type='smf', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  rrc_rolloff=0.5, adc_bitres=None, adc_lp_filter_type='bessel',
                  lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
                          rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
                          dac_minmax_norm=dac_minmax_norm, dac_config=dac_config,
-                         smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
+                         fiber_config=fiber_config, fiber_type=fiber_type,
+                         photodiode_config=photodiode_config, modulator_config=modulator_config,
                          modulator_type=modulator_type, learn_rx=True, learn_tx=False,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          adc_bwl_cutoff_hz=adc_bwl_cutoff_hz, adc_bitres=adc_bitres,
@@ -1985,16 +1990,16 @@ class JointTxRxIM(IntensityModulationChannel):
     """
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length,
-                 smf_config: dict, photodiode_config: dict, modulator_config: dict,
-                 dac_config: dict, adc_bwl_cutoff_hz: float,
-                 dac_minmax_norm: float | str = 'auto',
-                 modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 fiber_config: dict, photodiode_config: dict, modulator_config: dict,
+                 dac_config: dict, adc_bwl_cutoff_hz: float, dac_minmax_norm: float | str = 'auto',
+                 modulator_type='eam', fiber_type='smf', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  rrc_rolloff=0.5, adc_bitres=None, adc_lp_filter_type='bessel',
                  lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000),
                  tx_optimizer_params: dict | None = None) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
-                         smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
+                         fiber_config=fiber_config, fiber_type=fiber_type,
+                         photodiode_config=photodiode_config, modulator_config=modulator_config,
                          modulator_type=modulator_type, dac_config=dac_config,
                          dac_minmax_norm=dac_minmax_norm, adc_bwl_cutoff_hz=adc_bwl_cutoff_hz,
                          learn_rx=True, learn_tx=True, rx_filter_length=rx_filter_length,
@@ -2013,14 +2018,15 @@ class LinearFFEIM(IntensityModulationChannel):
     """
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length, ffe_n_taps,
-                 smf_config: dict, photodiode_config: dict, modulator_config: dict,
+                 fiber_config: dict, photodiode_config: dict, modulator_config: dict,
                  dac_config: dict, adc_bwl_cutoff_hz, dac_minmax_norm: float | str = 'auto',
-                 modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 modulator_type='eam', fiber_type='smf', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  rrc_rolloff=0.5, adc_bitres=None, adc_lp_filter_type='bessel',
                  lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation,
-                         smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
+                         fiber_config=fiber_config, fiber_type=fiber_type,
+                         photodiode_config=photodiode_config, modulator_config=modulator_config,
                          dac_config=dac_config, dac_minmax_norm=dac_minmax_norm,
                          modulator_type=modulator_type, equaliser_config={'n_taps': ffe_n_taps},
                          learn_rx=False, learn_tx=False, rx_filter_length=rx_filter_length,
@@ -2053,7 +2059,7 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
 
         tx : symbols -> upsampling -> pulse shaping -> dac -> eam
 
-        [tx] x n_channels -> WDM shift and add ->  singe mode fiber
+        [tx] x n_channels -> WDM shift and add ->  singe mode fiber / split-step fourier
                                                           |
                                                     channel selection
                                                       (filtering)
@@ -2065,10 +2071,10 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
     """
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  learn_rx, learn_tx, rx_filter_length, tx_filter_length,
-                 smf_config: dict, photodiode_config: dict, modulator_config: dict,
+                 fiber_config: dict, photodiode_config: dict, modulator_config: dict,
                  dac_config: dict, wdm_channel_spacing_hz, adc_bwl_cutoff_hz,
                  wdm_channel_selection_rel_cutoff, dac_minmax_norm: float | str = 'auto',
-                 modulator_type='eam', equaliser_config: dict | None = None,
+                 modulator_type='eam', fiber_type='smf', equaliser_config: dict | None = None,
                  rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  adc_lp_filter_type='bessel',
                  rrc_rolloff=0.5, lr_schedule='oneclr', eval_batch_size_in_syms=1000,
@@ -2077,7 +2083,8 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation, lr_schedule=lr_schedule,
                          learn_rx=learn_rx, learn_tx=learn_tx, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
-                         smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
+                         fiber_config=fiber_config, fiber_type=fiber_type,
+                         photodiode_config=photodiode_config, modulator_config=modulator_config,
                          dac_config=dac_config, dac_minmax_norm=dac_minmax_norm,
                          modulator_type=modulator_type, equaliser_config=equaliser_config,
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
@@ -2241,17 +2248,18 @@ class PulseShapingIMwithWDM(IntensityModulationChannelwithWDM):
     """
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length,
-                 smf_config: dict, photodiode_config: dict, modulator_config: dict,
+                 fiber_config: dict, photodiode_config: dict, modulator_config: dict,
                  dac_config: dict, wdm_channel_spacing_hz, wdm_channel_selection_rel_cutoff,
                  adc_bwl_cutoff_hz, adc_lp_filter_type='bessel', modulator_type='eam',
-                 rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 fiber_type='smf', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_minmax_norm: float | str = 'auto', rrc_rolloff=0.5,
                  lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000),
                  torch_seed=0, tx_optimizer_params: dict | None = None) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation, lr_schedule=lr_schedule,
                          learn_rx=False, learn_tx=True, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
-                         smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
+                         fiber_config=fiber_config, fiber_type=fiber_type,
+                         photodiode_config=photodiode_config, modulator_config=modulator_config,
                          dac_config=dac_config, dac_minmax_norm=dac_minmax_norm,
                          wdm_channel_spacing_hz=wdm_channel_spacing_hz,
                          wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
@@ -2272,17 +2280,18 @@ class RxFilteringIMwithWDM(IntensityModulationChannelwithWDM):
     """
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length,
-                 smf_config: dict, photodiode_config: dict, modulator_config: dict,
+                 fiber_config: dict, photodiode_config: dict, modulator_config: dict,
                  dac_config: dict, wdm_channel_spacing_hz, adc_bwl_cutoff_hz,
                  wdm_channel_selection_rel_cutoff, adc_lp_filter_type='bessel',
-                 modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 modulator_type='eam', fiber_type='smf', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_minmax_norm: float | str = 'auto', rrc_rolloff=0.5,
                  lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000),
                  torch_seed=0) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation, lr_schedule=lr_schedule,
                          learn_rx=True, learn_tx=False, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
-                         smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
+                         fiber_config=fiber_config, fiber_type=fiber_type,
+                         photodiode_config=photodiode_config, modulator_config=modulator_config,
                          dac_config=dac_config, dac_minmax_norm=dac_minmax_norm,
                          wdm_channel_spacing_hz=wdm_channel_spacing_hz,
                          wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
@@ -2303,16 +2312,18 @@ class JointTxRxIMwithWDM(IntensityModulationChannelwithWDM):
     """
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length,
-                 smf_config: dict, photodiode_config: dict, modulator_config: dict,
+                 fiber_config: dict, photodiode_config: dict, modulator_config: dict,
                  dac_config: dict, wdm_channel_spacing_hz, wdm_channel_selection_rel_cutoff,
-                 adc_bwl_cutoff_hz, modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 adc_bwl_cutoff_hz, modulator_type='eam', fiber_type='smf',
+                 rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_minmax_norm: float | str = 'auto', rrc_rolloff=0.5, adc_lp_filter_type='bessel',
                  lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000),
                  torch_seed=0, tx_optimizer_params: dict | None = None) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation, lr_schedule=lr_schedule,
                          learn_rx=True, learn_tx=True, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
-                         smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
+                         fiber_config=fiber_config, fiber_type=fiber_type,
+                         photodiode_config=photodiode_config, modulator_config=modulator_config,
                          dac_config=dac_config, dac_minmax_norm=dac_minmax_norm,
                          wdm_channel_spacing_hz=wdm_channel_spacing_hz,
                          wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
@@ -2332,16 +2343,17 @@ class LinearFFEIMwithWDM(IntensityModulationChannelwithWDM):
     """
     def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
                  rx_filter_length, tx_filter_length, ffe_n_taps: int,
-                 smf_config: dict, photodiode_config: dict, modulator_config: dict,
+                 fiber_config: dict, photodiode_config: dict, modulator_config: dict,
                  dac_config: dict, adc_bwl_cutoff_hz,  wdm_channel_spacing_hz, wdm_channel_selection_rel_cutoff,
-                 modulator_type='eam', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 modulator_type='eam', fiber_type='smf', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
                  dac_minmax_norm: float | str = 'auto', rrc_rolloff=0.5, adc_lp_filter_type='bessel',
                  lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000),
                  torch_seed=0) -> None:
         super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
                          batch_size=batch_size, constellation=constellation, lr_schedule=lr_schedule,
                          learn_rx=False, learn_tx=False, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
-                         smf_config=smf_config, photodiode_config=photodiode_config, modulator_config=modulator_config,
+                         fiber_config=fiber_config, fiber_type=fiber_type,
+                         photodiode_config=photodiode_config, modulator_config=modulator_config,
                          dac_config=dac_config, wdm_channel_spacing_hz=wdm_channel_spacing_hz,
                          wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                          modulator_type=modulator_type, equaliser_config={'n_taps': ffe_n_taps},
