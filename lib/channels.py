@@ -120,7 +120,8 @@ class SplitStepFourierFiber(object):
         self.carrier_wavelength = carrier_wavelength
         self.Fs = Fs
         self.step_length = step_length
-        assert step_length < self.fiber_length
+        if self.fiber_length > 0.0:
+            assert step_length < self.fiber_length
         self.gamma = gamma
         self.n_steps = int(np.floor(self.fiber_length / self.step_length))
 
@@ -162,7 +163,7 @@ class SplitStepFourierFiber(object):
             # Second linear step in frequency domain
             e = fft(e) * linear_operator
 
-        return ifft(e) * np.exp(0)
+        return ifft(e)
 
 
 class WienerHammersteinChannel(torch.nn.Module):
