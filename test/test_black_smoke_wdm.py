@@ -8,7 +8,7 @@
 import json
 import numpy as np
 
-from lib.systems import JointTxRxAWGNwithBWLandWDM, JointTxRxIMwithWDM
+from lib.systems import JointTxRxAWGNwithBWLandWDM, JointTxRxIMwithWDM, VolterraIMwithWDM
 
 NUMPY_SEED = 1235246
 N_SYMS = int(1e4)
@@ -81,6 +81,27 @@ def test_black_smoke_imdd_wdm_joint_ssfm():
 
     e2e_system = JointTxRxIMwithWDM(constellation=CONSTELLATION,
                                     **imdd_kwargs)
+    
+    e2e_system.initialize_optimizer()
+
+    loss = e2e_system.optimize(syms, return_loss=True)
+    __ = e2e_system.evaluate(syms)
+
+    assert np.all(np.logical_not(np.isnan(loss)))
+
+def test_black_smoke_imdd_wdm_volterra():
+    """
+        Test JointTxRx for IM/DD channel with SSFM
+    """
+    IMDD_CONFIG = 'test/test_config/imdd_wdm_config.json'
+    imdd_kwargs = read_json_config(IMDD_CONFIG)
+
+    syms = generate_symbols(N_SYMS, CONSTELLATION)
+
+    e2e_system = VolterraIMwithWDM(constellation=CONSTELLATION,
+                            ffe_n_taps1=25,
+                            ffe_n_taps2=35,
+                            **imdd_kwargs)
     
     e2e_system.initialize_optimizer()
 

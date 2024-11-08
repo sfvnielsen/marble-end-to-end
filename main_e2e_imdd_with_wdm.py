@@ -12,7 +12,7 @@ import seaborn as sns
 import pandas as pd
 
 from lib.utility import calc_ser_pam
-from lib.systems import PulseShapingIMwithWDM, RxFilteringIMwithWDM, JointTxRxIMwithWDM, LinearFFEIMwithWDM
+from lib.systems import PulseShapingIMwithWDM, RxFilteringIMwithWDM, JointTxRxIMwithWDM, VolterraIMwithWDM
 from lib.plotting import plot_fft_filter_response
 
 font = {'family': 'Helvetica',
@@ -48,11 +48,11 @@ if __name__ == "__main__":
 
     # Configuration for DAC (and ADC)
     dac_config = {
-        'peak_to_peak_voltage': 2.0,
-        'bias_voltage': 'positive_vpp',
+        'peak_to_peak_voltage': 3.0,
+        'bias_voltage': 'negative_vpp',
         'bwl_cutoff': 45e9,  # Hz
         'learnable_normalization': True,
-        'learnable_bias': False,
+        'learnable_bias': True,
         'filter_type': 'bessel',
         'lpf_order': 5
     }
@@ -60,9 +60,10 @@ if __name__ == "__main__":
     adc_bwl_cutoff_hz = 45e9  # same as dac
 
     # Configuration of electro absorption modulator
-    modulator_type = 'ideal'
+    modulator_type = 'eam'
     modulator_config = {
-        'laser_power_dbm': -11.0,
+        'laser_power_dbm': -4.0,
+        'linewidth_enhancement': 1.0
     }
 
     # Channel configuration - single model fiber
@@ -135,9 +136,9 @@ if __name__ == "__main__":
                                    fiber_config=fiber_config, fiber_type=fiber_type, photodiode_config=photodiode_config, modulator_config=modulator_config,
                                    modulator_type=modulator_type, dac_config=dac_config, adc_bwl_cutoff_hz=adc_bwl_cutoff_hz)
     
-    ffe_sys = LinearFFEIMwithWDM(sps=samples_per_symbol, baud_rate=baud_rate,
+    ffe_sys = VolterraIMwithWDM(sps=samples_per_symbol, baud_rate=baud_rate,
                                  learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
-                                 rrc_rolloff=rrc_rolloff, ffe_n_taps=rx_filter_length,
+                                 rrc_rolloff=rrc_rolloff, ffe_n_taps1=55, ffe_n_taps2=55,
                                  wdm_channel_spacing_hz=wdm_channel_spacing,
                                  wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                                  tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, lr_schedule=lr_schedule,

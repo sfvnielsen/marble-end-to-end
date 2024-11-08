@@ -10,7 +10,7 @@ import numpy as np
 
 from lib.systems import PulseShapingAWGN, RxFilteringAWGN, PulseShapingAWGNwithBWL,\
                         JointTxRxAWGNwithBWL, PulseShapingIM, RxFilteringIM, LinearFFEIM,\
-                        JointTxRxIM
+                        JointTxRxIM, VolterraIM
 
 NUMPY_SEED = 1235246
 N_SYMS = int(1e4)
@@ -235,3 +235,24 @@ def test_black_smoke_imdd_joint_ssfm():
 
     assert np.all(np.logical_not(np.isnan(loss)))
 
+
+def test_black_smoke_imdd_volterra():
+    """
+        Test JointTxRx for IM/DD channel with SSFM
+    """
+    IMDD_CONFIG = 'test/test_config/imdd_config.json'
+    imdd_kwargs = read_json_config(IMDD_CONFIG)
+
+    syms = generate_symbols(N_SYMS, CONSTELLATION)
+
+    e2e_system = VolterraIM(constellation=CONSTELLATION,
+                            ffe_n_taps1=25,
+                            ffe_n_taps2=35,
+                            **imdd_kwargs)
+    
+    e2e_system.initialize_optimizer()
+
+    loss = e2e_system.optimize(syms, return_loss=True)
+    __ = e2e_system.evaluate(syms)
+
+    assert np.all(np.logical_not(np.isnan(loss)))

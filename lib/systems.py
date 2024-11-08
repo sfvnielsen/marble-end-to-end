@@ -19,7 +19,7 @@ from .devices import ElectroAbsorptionModulator, MyNonLinearEAM, Photodiode,\
                      IdealLinearModulator, DigitalToAnalogConverter, AnalogToDigitalConverter,\
                      MachZehnderModulator
 from .channels import SingleModeFiber, SplitStepFourierFiber, SurrogateChannel
-from .equalization import LinearFeedForwardEqualiser
+from .equalization import LinearFeedForwardEqualiser, VolterraEqualizer
 
 # TODO: Implement GPU support
 # TODO: Be in control of dtypes.
@@ -1724,8 +1724,15 @@ class IntensityModulationChannel(LearnableTransmissionSystem):
         # Define equaliser object
         self.equaliser = AllPassFilter()
         if self.use_eq:
-            self.equaliser = LinearFeedForwardEqualiser(samples_per_symbol=self.sps, dtype=torch.float64,  # FIXME: !
-                                                        **equaliser_config)
+            equaliser_type = equaliser_config.pop('type', 'ffe')
+            if equaliser_type.lower() == 'ffe':
+                self.equaliser = LinearFeedForwardEqualiser(samples_per_symbol=self.sps, dtype=torch.float64,
+                                                            **equaliser_config)
+            elif equaliser_type.lower() == 'volterra':
+                self.equaliser = VolterraEqualizer(samples_per_symbol=self.sps, dtype=torch.float64,
+                                                   **equaliser_config)
+            else:
+                raise ValueError(f"Uknown equaliser type: '{equaliser_type}'")
 
         # Estimate the min-max value of an RRC filter empirically and apply that as normalization in the DAC
         dac_normalizer = dac_minmax_norm
@@ -2040,6 +2047,37 @@ class LinearFFEIM(IntensityModulationChannel):
 
     def get_equaliser_filter(self):
         return self.equaliser.filter.get_filter()
+
+class VolterraIM(IntensityModulationChannel):
+    """
+        RRC + Matched filter + Volterra (FFE) in the (Liang and Kahn, 2023) IM/DD system
+    """
+    def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
+                 rx_filter_length, tx_filter_length, ffe_n_taps1, ffe_n_taps2,
+                 fiber_config: dict, photodiode_config: dict, modulator_config: dict,
+                 dac_config: dict, adc_bwl_cutoff_hz, dac_minmax_norm: float | str = 'auto',
+                 modulator_type='eam', fiber_type='smf', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 rrc_rolloff=0.5, adc_bitres=None, adc_lp_filter_type='bessel',
+                 lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000)) -> None:
+        super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
+                         batch_size=batch_size, constellation=constellation,
+                         fiber_config=fiber_config, fiber_type=fiber_type,
+                         photodiode_config=photodiode_config, modulator_config=modulator_config,
+                         dac_config=dac_config, dac_minmax_norm=dac_minmax_norm,
+                         modulator_type=modulator_type, equaliser_config={'type': 'volterra', 'n_lags1': ffe_n_taps1,
+                                                                          'n_lags2': ffe_n_taps2},
+                         learn_rx=False, learn_tx=False, rx_filter_length=rx_filter_length,
+                         tx_filter_length=tx_filter_length,
+                         rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
+                         adc_bwl_cutoff_hz=adc_bwl_cutoff_hz, adc_bitres=adc_bitres,
+                         rrc_rolloff=rrc_rolloff, lr_schedule=lr_schedule, eval_batch_size_in_syms=eval_batch_size_in_syms,
+                         print_interval=print_interval,
+                         adc_lp_filter_type=adc_lp_filter_type,
+                         tx_optimizer_params=None)
+
+    def get_equaliser_filter(self):
+        raise NotImplementedError
+
 
 
 class IntensityModulationChannelwithWDM(IntensityModulationChannel):
@@ -2357,6 +2395,36 @@ class LinearFFEIMwithWDM(IntensityModulationChannelwithWDM):
                          dac_config=dac_config, wdm_channel_spacing_hz=wdm_channel_spacing_hz,
                          wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
                          modulator_type=modulator_type, equaliser_config={'n_taps': ffe_n_taps},
+                         rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
+                         dac_minmax_norm=dac_minmax_norm, adc_bwl_cutoff_hz=adc_bwl_cutoff_hz, adc_lp_filter_type=adc_lp_filter_type,
+                         rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
+                         torch_seed=torch_seed, tx_optimizer_params=None)
+
+
+class VolterraIMwithWDM(IntensityModulationChannelwithWDM):
+    """
+        Intensity modulation/direct detection (IM/DD) system with WDM evaluation
+
+        Pulse-shaper and rx-filter are fixed to RRC and Volterra equaliser is run afterwards
+
+    """
+    def __init__(self, sps, baud_rate, learning_rate, batch_size, constellation,
+                 rx_filter_length, tx_filter_length, ffe_n_taps1: int, ffe_n_taps2: int,
+                 fiber_config: dict, photodiode_config: dict, modulator_config: dict,
+                 dac_config: dict, adc_bwl_cutoff_hz,  wdm_channel_spacing_hz, wdm_channel_selection_rel_cutoff,
+                 modulator_type='eam', fiber_type='smf', rx_filter_init_type='rrc', tx_filter_init_type='rrc',
+                 dac_minmax_norm: float | str = 'auto', rrc_rolloff=0.5, adc_lp_filter_type='bessel',
+                 lr_schedule='oneclr', eval_batch_size_in_syms=1000, print_interval=int(50000),
+                 torch_seed=0) -> None:
+        super().__init__(sps=sps, baud_rate=baud_rate, learning_rate=learning_rate,
+                         batch_size=batch_size, constellation=constellation, lr_schedule=lr_schedule,
+                         learn_rx=False, learn_tx=False, rx_filter_length=rx_filter_length, tx_filter_length=tx_filter_length,
+                         fiber_config=fiber_config, fiber_type=fiber_type,
+                         photodiode_config=photodiode_config, modulator_config=modulator_config,
+                         dac_config=dac_config, wdm_channel_spacing_hz=wdm_channel_spacing_hz,
+                         wdm_channel_selection_rel_cutoff=wdm_channel_selection_rel_cutoff,
+                         modulator_type=modulator_type, equaliser_config={'type': 'volterra', 'n_lags1': ffe_n_taps1,
+                                                                          'n_lags2': ffe_n_taps2},
                          rx_filter_init_type=rx_filter_init_type, tx_filter_init_type=tx_filter_init_type,
                          dac_minmax_norm=dac_minmax_norm, adc_bwl_cutoff_hz=adc_bwl_cutoff_hz, adc_lp_filter_type=adc_lp_filter_type,
                          rrc_rolloff=rrc_rolloff, eval_batch_size_in_syms=eval_batch_size_in_syms, print_interval=print_interval,
