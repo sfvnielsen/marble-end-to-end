@@ -146,6 +146,9 @@ class SplitStepFourierFiber(object):
     def get_fq_filter(self, signal_length):
         freq = self.Fs * fftfreq(signal_length)
         return fftshift(freq).numpy(), self._calculate_linear_filter(freq).detach().numpy()
+    
+    def set_gamma(self, new_gamma):
+        self.gamma = new_gamma
 
     def forward(self, x: torch.Tensor):
         Nfft = len(x)

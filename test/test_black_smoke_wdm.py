@@ -109,3 +109,25 @@ def test_black_smoke_imdd_wdm_volterra():
     __ = e2e_system.evaluate(syms)
 
     assert np.all(np.logical_not(np.isnan(loss)))
+
+def test_black_smoke_imdd_wdm_joint_eval():
+    """
+        Test JointTxRx for IM/DD channel with WDM
+    """
+    IMDD_CONFIG = 'test/test_config/imdd_wdm_ssfm_config.json'
+    imdd_kwargs = read_json_config(IMDD_CONFIG)
+
+    EVAL_CONFIG = 'test/test_config/wdm_eval.json'
+    eval_kwargs = read_json_config(EVAL_CONFIG)
+
+    syms = generate_symbols(N_SYMS, CONSTELLATION)
+
+    e2e_system = JointTxRxIMwithWDM(constellation=CONSTELLATION,
+                                    **imdd_kwargs)
+    
+    e2e_system.initialize_optimizer()
+
+    loss = e2e_system.optimize(syms, return_loss=True)
+    eval_out = e2e_system.evaluate(syms, **eval_kwargs)
+
+    assert np.all(np.logical_not(np.isnan(loss))) and np.all(np.logical_not(np.isnan(eval_out)))
