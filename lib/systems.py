@@ -2193,7 +2193,8 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
         return rx_eq_out
 
     def eval_tx(self, symbols_up: torch.TensorType, channel_spacing_hz: float,
-                batch_size: int, dac_bitres: int | None = None, torch_seed: int = 0):
+                batch_size: int, laser_power_dbm: float | None = None,
+                dac_bitres: int | None = None, torch_seed: int = 0):
         # Set DAC bit resolution
         self.dac.set_bitres(dac_bitres)
 
@@ -2216,6 +2217,9 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
         v = self.dac.forward(x)
 
         # Apply EAM
+        if laser_power_dbm:
+            self.modulator.set_laser_power_dbm(laser_power_dbm)
+
         x_eam = self.modulator.forward(v)
 
         # Construct WDM signal
@@ -2259,9 +2263,10 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
         decimate = eval_config.get('decimate', True)
         channel_spacing_hz = eval_config.get('channel_spacing_hz', self.wdm_channel_spacing_hz)
         torch_seed = eval_config.get('seed', self.torch_seed)
+        laser_power_dbm = eval_config.get('laser_power_dbm', None)
 
         # Apply Tx (including generating interferer symbols and WDM signal)
-        tx_wdm = self.eval_tx(symbols_up, channel_spacing_hz, batch_size,
+        tx_wdm = self.eval_tx(symbols_up, channel_spacing_hz, batch_size, laser_power_dbm=laser_power_dbm,
                               dac_bitres=eval_config.get('dac_bitres', None), torch_seed=torch_seed)
 
         # Apply SMF
