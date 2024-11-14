@@ -2276,13 +2276,20 @@ class IntensityModulationChannelwithWDM(IntensityModulationChannel):
         torch_seed = eval_config.get('seed', self.torch_seed)
         laser_power_dbm = eval_config.get('laser_power_dbm', None)
         wdm_n_channels = eval_config.get('wdm_n_channels', None)
+        fiber_gamma = eval_config.get('ssfm_gamma', None)
 
         # Apply Tx (including generating interferer symbols and WDM signal)
         tx_wdm = self.eval_tx(symbols_up, channel_spacing_hz, batch_size, laser_power_dbm=laser_power_dbm,
                               dac_bitres=eval_config.get('dac_bitres', None),
                               wdm_n_channels=wdm_n_channels, torch_seed=torch_seed)
 
-        # Apply SMF
+        # Apply fiber model
+        if fiber_gamma:
+            if self.fiber_type == "ssfm":
+                self.channel.set_gamma(fiber_gamma)
+            else:
+                raise ValueError(f"Cannot change the non-linearity coefficient gamma for a standard fiber.")
+
         x_smf = self.channel.forward(tx_wdm)
 
         # Channel selection - filter out everything except the "middle" channel
