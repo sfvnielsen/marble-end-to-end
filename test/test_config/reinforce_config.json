@@ -1,0 +1,4 @@
+{
+    "type": "reinforce",
+    "tx_learning_rate": 1e-4
+}

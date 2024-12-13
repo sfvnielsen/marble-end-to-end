@@ -266,10 +266,11 @@ class LearnableTransmissionSystem(object):
                 raise NotImplementedError
             
             elif self.tx_optimizer_type.lower() == 'reinforce':
+                # REINFORCE algorithm by (Williams, 1992). Gaussian proposal distribution
+                # Reward is negative MSE
                 self.optimize_method_funcp = self._optimize_reinforce
-                self.tx_learning_rate = tx_optimizer_params_local.pop('learning_rate', 1e-3)
-                self.tx_lr_schedule = None  # FIXME...
-                
+                self.tx_learning_rate = tx_optimizer_params_local.pop('tx_learning_rate', 1e-3)  # TODO: LR scheduling for Tx
+
             else:
                 raise ValueError(f"Unknown optimizer type: '{self.tx_optimizer_type}'")
         else:
@@ -294,8 +295,8 @@ class LearnableTransmissionSystem(object):
         if self.tx_optimizer_type.lower() == 'reinforce':
             # HACK: Right now, pulse_shaper will always exist at call-time. 
             # TODO: Generalize to any number of tx_parameters.
-            self.proposal_mu = torch.zeros_like(self.pulse_shaper)
-            self.proposal_sigma = torch.ones_like(self.pulse_shaper)
+            self.proposal_mu = self.pulse_shaper.conv_weights.clone()
+            self.proposal_sigma = 0.5 * torch.ones_like(self.pulse_shaper.conv_weights)
 
 
     def set_esn0_db(self, new_esn0_db):
@@ -327,7 +328,7 @@ class LearnableTransmissionSystem(object):
     def get_esn0_db(self):
         return self.esn0_db
 
-    def forward_tx(self, x_syms: torch.TensorType, *tx_params) -> torch.TensorType:
+    def forward_tx(self, x_syms: torch.TensorType) -> torch.TensorType:
         raise NotImplementedError
 
     def forward_channel(self, tx_signal: torch.TensorType) -> torch.TensorType:
@@ -628,9 +629,6 @@ class LearnableTransmissionSystem(object):
         if self.lr_schedule and self.learn_rx:
             lr_scheduler = self.create_lr_schedule(self.optimizer, lr_schedule_str=self.lr_schedule,
                                                    n_symbols=len(symbols), learning_rate=self.learning_rate)
-        if self.tx_lr_schedule:
-            tx_lr_schedule = self.create_lr_schedule(self.tx_optimizer, lr_schedule_str=self.tx_lr_schedule,
-                                                     n_symbols=len(symbols), learning_rate=self.tx_learning_rate)
 
         # Loop over the chunks of the data
         for batch in range(len(symbols_tensor) // self.batch_size):
@@ -639,7 +637,7 @@ class LearnableTransmissionSystem(object):
 
             # Sample new Tx filter from proposal (normal distribution)
             with torch.no_grad():
-                self.pulse_shaper = self.proposal_mu + torch.randn_like(self.pulse_shaper) * self.proposal_sigma
+                self.pulse_shaper.conv_weights.data = self.proposal_mu + torch.randn_like(self.proposal_mu) * self.proposal_sigma
 
             # Slice out batch and create tensors
             target = symbols_tensor[batch * self.batch_size:(batch * self.batch_size + self.batch_size)]
@@ -653,16 +651,17 @@ class LearnableTransmissionSystem(object):
             # Calculate loss
             loss = self.calculate_loss(target, rx_out)
 
-            # Update Rx using backpropagation
-            loss.backward()
-            self.optimizer.step()
+            if self.learn_rx:
+                # Update Rx using backpropagation
+                loss.backward()
+                self.optimizer.step()
 
             # Update proposal distribution for Tx
             with torch.no_grad():
                 reward_bias = 0.0  # TODO: Do we need this?
-                reward = -torch.mean(torch.square(target-rx_out))
-                eligibility_mu = ((self.pulse_shaper-self.proposal_mu) / self.proposal_sigma**2)  # FIXME: Add a clipping
-                eligibility_sigma = (-1/self.proposal_sigma + (self.pulse_shaper-self.proposal_mu)**2/self.proposal_sigma**3)
+                reward = -torch.mean(torch.square(target-rx_out))  # negative MSE as reward function.
+                eligibility_mu = torch.nn.utils.clip_grad_norm_((self.pulse_shaper.conv_weights-self.proposal_mu) / self.proposal_sigma**2, 100.0)
+                eligibility_sigma = torch.nn.utils.clip_grad_norm_(-1/self.proposal_sigma + (self.pulse_shaper.conv_weights-self.proposal_mu)**2/self.proposal_sigma**3, 100.0)  # FIXME: Expose gradient norm...
 
                 self.proposal_mu += self.tx_learning_rate * (reward - reward_bias) * eligibility_mu
                 self.proposal_sigma += self.tx_learning_rate * (reward - reward_bias) * eligibility_sigma
@@ -670,18 +669,14 @@ class LearnableTransmissionSystem(object):
             # Update stepsizes according to schedule
             if self.lr_schedule and self.learn_rx:
                 lr_scheduler.step()
-
-            if self.tx_lr_schedule:
-                tx_lr_schedule.step()
             
             # Print the status of the optimization (loss and lrs)
             this_rx_lr = self.optimizer.param_groups[-1]['lr'] if self.lr_schedule and self.learn_rx else np.nan
-            this_tx_lr = self.tx_optimizer.param_groups[-1]['lr']
             
             if (batch % self.batch_print_interval) == 0:
                 print_strs = [f"Batch {batch} (# symbols {batch * self.batch_size:.2e})"]
 
-                print_strs.append(f"Symbol loss: {loss.item()[-1]:.3f} (Rx LR: {this_rx_lr:.2e}, Tx LR {this_tx_lr:.2e})")
+                print_strs.append(f"Symbol loss: {loss.item():.3f} (Rx LR: {this_rx_lr:.2e}, Tx LR {self.tx_learning_rate:.2e})")
                 print(" - ".join(print_strs))
             symbol_losses[batch] = loss.item()
 
@@ -732,8 +727,7 @@ class BasicAWGN(LearnableTransmissionSystem):
             g = g / np.linalg.norm(g)
             tx_filter_init = g
 
-        # self.pulse_shaper = FIRfilter(filter_weights=tx_filter_init, trainable=learn_tx)
-        self.pulse_shaper = torch.from_numpy(tx_filter_init).requires_grad_(learn_tx)
+        self.pulse_shaper = FIRfilter(filter_weights=tx_filter_init, trainable=learn_tx)
 
         # Define rx filter - downsample to 1 sps as part of convolution (stride)
         rx_filter_init = np.zeros((rx_filter_length,))
@@ -757,7 +751,7 @@ class BasicAWGN(LearnableTransmissionSystem):
         self.constellation_scale = np.sqrt(np.average(np.square(constellation)))
 
         # Define number of symbols to discard pr. batch due to boundary effects of convolution
-        self.discard_per_batch = int((len(self.pulse_shaper) + self.rx_filter.filter_length) / self.sps)
+        self.discard_per_batch = int((self.pulse_shaper.filter_length + self.rx_filter.filter_length) / self.sps)
 
     def get_rx_parameters(self):
         return [{"params": self.rx_filter.parameters()}]
@@ -765,16 +759,12 @@ class BasicAWGN(LearnableTransmissionSystem):
     def get_tx_parameters(self):
         return [{"params": self.pulse_shaper.parameters()}]
 
-    def forward_tx(self, x_syms: torch.TensorType, *tx_params):
-        # Unpack parameters
-        pulse_shaping_filter = tx_params[0]
-
+    def forward_tx(self, x_syms: torch.TensorType):
         # Input is a sequence of symbols from constellation
         x_syms_up = self.upsample(x_syms)
 
         # Apply pulse shaper
-        xpad = torch.nn.functional.pad(x_syms_up, (len(pulse_shaping_filter)//2, len(pulse_shaping_filter)//2))
-        x = tconvolve(xpad, pulse_shaping_filter, mode="valid")
+        x = self.pulse_shaper.forward(x_syms_up)
 
         # Normalize (if self.normalization_after_tx is set, else norm_constant = 1.0)
         x = x / self.normalization_constant
@@ -826,9 +816,7 @@ class BasicAWGN(LearnableTransmissionSystem):
 
     def post_update(self):
         # Projected gradient - Normalize filters
-        with torch.no_grad():
-            self.pulse_shaper /= torch.linalg.norm(self.pulse_shaper)
-
+        self.pulse_shaper.normalize_filter()
         self.rx_filter.normalize_filter()
 
     def get_pulse_shaping_filter(self):
@@ -921,12 +909,11 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
             g = g / np.linalg.norm(g)
             tx_filter_init = g
 
-        #self.pulse_shaper = AllPassFilter()
-        #if tx_multi_channel:
-        #    self.pulse_shaper = MultiChannelFIRfilter(filter_weights=tx_filter_init, trainable=learn_tx)
-        #else:
-        #    self.pulse_shaper = FIRfilter(filter_weights=tx_filter_init, trainable=learn_tx)
-        self.pulse_shaper = torch.from_numpy(g).requires_grad_(learn_tx)
+        self.pulse_shaper = AllPassFilter()
+        if tx_multi_channel:
+            self.pulse_shaper = MultiChannelFIRfilter(filter_weights=tx_filter_init, trainable=learn_tx)
+        else:
+            self.pulse_shaper = FIRfilter(filter_weights=tx_filter_init, trainable=learn_tx)
 
         # Define rx filter - downsample to 1 sps as part of convolution (stride)
         rx_filter_init = np.zeros((rx_filter_length,))
@@ -983,7 +970,7 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         self.normalization_constant = np.sqrt(np.average(np.square(self.constellation)) / self.sps)
 
         # Define number of symbols to discard pr. batch due to boundary effects of convolution
-        self.discard_per_batch = int((len(self.pulse_shaper) + self.rx_filter.filter_length) / self.sps)
+        self.discard_per_batch = int((self.pulse_shaper.filter_length + self.rx_filter.filter_length) / self.sps)
 
         # Calculate constellation scale
         self.constellation_scale = np.sqrt(np.average(np.square(constellation)))
@@ -999,18 +986,14 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
         return params_to_return
 
     def get_tx_parameters(self):
-        return [{"params": self.pulse_shaper}]
+        return [{"params": self.pulse_shaper.parameters()}]
 
-    def forward_tx(self, x_syms: torch.TensorType, *tx_params) -> torch.TensorType:
-        # Unpack parameters
-        pulse_shaping_filter = tx_params[0]
-
+    def forward_tx(self, x_syms: torch.TensorType) -> torch.TensorType:
         # Input is a sequence of symbols from constellation
         x_syms_up = self.upsample(x_syms)
 
         # Apply pulse shaper
-        xpad = torch.nn.functional.pad(x_syms_up, (len(pulse_shaping_filter)//2, len(pulse_shaping_filter)//2))
-        x = tconvolve(xpad, pulse_shaping_filter, mode="valid")
+        x = self.pulse_shaper.forward(x_syms_up)
 
         return x
 
@@ -1046,8 +1029,7 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
     def _eval(self, symbols_up: torch.TensorType, batch_size: int, decimate: bool = True):
         # Input is assumed to be upsampled sybmols
         # Apply pulse shaper
-        xpad = torch.nn.functional.pad(symbols_up, (len(self.pulse_shaper)//2, len(self.pulse_shaper)//2))
-        x = tconvolve(xpad, self.pulse_shaper, mode="valid")
+        x = self.pulse_shaper.forward_batched(symbols_up, batch_size)
 
         # Normalize
         x = x / self.normalization_constant
@@ -1083,13 +1065,11 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
 
     def post_update(self):
         # Projected gradient - Normalize filters
-        with torch.no_grad():
-            self.pulse_shaper /= torch.linalg.norm(self.pulse_shaper)
-
+        self.pulse_shaper.normalize_filter()
         self.rx_filter.normalize_filter()
 
     def get_pulse_shaping_filter(self):
-        return self.pulse_shaper.detach().cpu().numpy()
+        return self.pulse_shaper.get_filter()
 
     def get_rx_filter(self):
         return self.rx_filter.get_filter()
@@ -1308,12 +1288,7 @@ class BasicAWGNwithBWLandWDM(BasicAWGNwithBWL):
                                        symbols_up,
                                        permute_symbols(symbols_up, self.sps, rng_gen)), dim=1)
 
-        # Apply same pulse shaper to all channels (MultiChannelFIRfilter)
-        # Apply same pulse shaper to all channels
-        xpad = torch.nn.functional.pad(symbols_up, (len(self.pulse_shaper)//2, len(self.pulse_shaper)//2))
-        x = tconvolve(xpad, self.pulse_shaper, mode="valid")
-        # FIXME: ... ...
-        
+        # Apply same pulse shaper to all channels (MultiChannelFIRfilter)    
         x = self.pulse_shaper.forward_numpy(symbols_up_chan)
         x = x / self.normalization_constant
 
