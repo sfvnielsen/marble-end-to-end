@@ -223,6 +223,7 @@ class LearnableTransmissionSystem(object):
         self.tx_multi_channel = tx_multi_channel
         self.optimizer = None
         self.tx_optimizer = None
+        self.pulse_shaper = None  #  This property must exist for much of this to make sense. Will be overridden by child classes.
 
         # Select optimization framework to use for the Tx
         self.optimize_method_funcp = self._optimize_backprop_funcp  # default is backprop
@@ -251,7 +252,7 @@ class LearnableTransmissionSystem(object):
                 self.tx_lr_schedule = tx_optimizer_params_local.pop('tx_lr_schedule', 'expdecay')
                 self.use_gradient_norm_clipping = tx_optimizer_params_local.pop('tx_gradient_norm_clipping', True)
 
-                # Surrgate optimizer
+                # Surrogate optimizer
                 self.surrogate_learning_rate = tx_optimizer_params_local.pop('surrogate_learning_rate', self.learning_rate)  # learning rate surrogate optimizer
                 self.surrogate_lr_schedule = tx_optimizer_params_local.pop('surrogate_lr_schedule', 'expdecay')
                 self.surrogate_channel = SurrogateChannel(multi_channel=tx_multi_channel, **tx_optimizer_params_local['surrogate_channel_kwargs'])
@@ -262,15 +263,12 @@ class LearnableTransmissionSystem(object):
             elif self.tx_optimizer_type.lower() == 'gaussian_rl':
                 # Implementation of Aoudia and Hoydis (2019) - 10.1109/JSAC.2019.2933891
                 # Reinforcement learning with random Gaussian policy.
-                self.optimize_method_funcp = self._optimize_gaussian_rl
+                raise NotImplementedError
+            
+            elif self.tx_optimizer_type.lower() == 'reinforce':
+                self.optimize_method_funcp = self._optimize_reinforce
                 self.tx_learning_rate = tx_optimizer_params_local.pop('learning_rate', 1e-3)
                 self.tx_lr_schedule = None  # FIXME...
-
-                # Chunk size
-                self.chunk_size_pct = tx_optimizer_params_local.pop('chunk_size_pct', 0.1)
-
-                # Hyperparameters of optimization
-                self.policy_noise_std = tx_optimizer_params_local.pop('policy_noise_std', 0.1)
                 
             else:
                 raise ValueError(f"Unknown optimizer type: '{self.tx_optimizer_type}'")
@@ -293,8 +291,12 @@ class LearnableTransmissionSystem(object):
                 self.tx_optimizer = torch.optim.Adam(self.get_tx_parameters(),
                                                      lr=self.tx_learning_rate)
         
-        if self.tx_optimizer_type.lower() == 'gaussian_rl':
-            print("TODO: Running with fixed learning rate and no Adam step...")
+        if self.tx_optimizer_type.lower() == 'reinforce':
+            # HACK: Right now, pulse_shaper will always exist at call-time. 
+            # TODO: Generalize to any number of tx_parameters.
+            self.proposal_mu = torch.zeros_like(self.pulse_shaper)
+            self.proposal_sigma = torch.ones_like(self.pulse_shaper)
+
 
     def set_esn0_db(self, new_esn0_db):
         self.esn0_db = new_esn0_db
@@ -303,9 +305,6 @@ class LearnableTransmissionSystem(object):
         raise NotImplementedError
 
     def get_tx_parameters(self):
-        raise NotImplementedError
-    
-    def get_tx_parameters_as_list(self) -> list:
         raise NotImplementedError
 
     def get_rx_parameters(self):
@@ -348,7 +347,7 @@ class LearnableTransmissionSystem(object):
 
     # full forward pass
     def forward(self, symbols: torch.TensorType) -> torch.TensorType:
-        tx  = self.forward_tx(symbols, *self.get_tx_parameters_as_list())
+        tx  = self.forward_tx(symbols)
         ychan = self.forward_channel(tx)
         y = self.forward_rx(ychan)
         return y
@@ -423,7 +422,7 @@ class LearnableTransmissionSystem(object):
             target = torch.from_numpy(symbols[b * self.batch_size:(b * self.batch_size + self.batch_size)])
 
             # Run upsampled symbols through system forward model - return symbols at Rx
-            tx = self.forward_tx(target, *self.get_tx_parameters_as_list())
+            tx = self.forward_tx(target)
             ychan = self.forward_channel(tx)
             rx_out = self.forward_rx(ychan)
 
@@ -530,7 +529,7 @@ class LearnableTransmissionSystem(object):
             # Gradient descent on surrogate model - use real channel as ground truth
             self.surrogate_optimizer.zero_grad(set_to_none=True)
             with torch.no_grad():
-                tx = self.forward_tx(tx_syms, *self.get_tx_parameters_as_list())
+                tx = self.forward_tx(tx_syms)
                 ychan_true = self.forward_channel(tx)
             ychan = self.surrogate_channel.forward(tx)
             surrogate_loss = self.calculate_surrogate_loss(ychan, ychan_true)
@@ -563,11 +562,11 @@ class LearnableTransmissionSystem(object):
 
             # Run Tx signal through real channel
             with torch.no_grad():
-                tx = self.forward_tx(target, *self.get_tx_parameters_as_list())
+                tx = self.forward_tx(target)
                 ychan_true = self.forward_channel(tx)
 
             # Then use the surrogate for updating the Tx params
-            tx = self.forward_tx(target, *self.get_tx_parameters_as_list())
+            tx = self.forward_tx(target)
             ychan = self.surrogate_channel.forward(tx)
             rx_out_surrogate = self.forward_rx(ychan)
             tx_loss = self.calculate_loss(target, rx_out_surrogate)
@@ -617,32 +616,56 @@ class LearnableTransmissionSystem(object):
 
         return rx_loss_per_batch, tx_loss_per_batch
     
-    def _optimize_gaussian_rl(self, symbols: npt.ArrayLike):
+    def _optimize_reinforce(self, symbols: npt.ArrayLike):
         """
-            main routine of the Gaussian reinforcement learning method
+            main routine of the REINFORCE optimization.
+            HACK: Currently only implemented for the pulse-shaper
         """
-        n_syms_pr_chunk = int(len(symbols) * self.chunk_size_pct)
-        symbol_losses = []
+        symbol_losses = np.zeros((len(symbols) // self.batch_size, ))
         symbols_tensor = torch.from_numpy(symbols)
 
         # Create learning rate scheduler(s)
         if self.lr_schedule and self.learn_rx:
             lr_scheduler = self.create_lr_schedule(self.optimizer, lr_schedule_str=self.lr_schedule,
-                                                   n_symbols=len(symbols), learning_rate=self.learning_rate,
-                                                   n_data_chunks=len(symbols)//n_syms_pr_chunk)
+                                                   n_symbols=len(symbols), learning_rate=self.learning_rate)
         if self.tx_lr_schedule:
             tx_lr_schedule = self.create_lr_schedule(self.tx_optimizer, lr_schedule_str=self.tx_lr_schedule,
-                                                     n_symbols=len(symbols), learning_rate=self.tx_learning_rate,
-                                                     n_data_chunks=len(symbols)//n_syms_pr_chunk)
+                                                     n_symbols=len(symbols), learning_rate=self.tx_learning_rate)
 
         # Loop over the chunks of the data
-        for chunk in range(len(symbols) // n_syms_pr_chunk):
-            # Take step on the Tx side
-            loss_chunk = self._optimize_gaussian_rl_tx(symbols_tensor[chunk*n_syms_pr_chunk:(chunk*n_syms_pr_chunk + n_syms_pr_chunk)])
+        for batch in range(len(symbols_tensor) // self.batch_size):
+            # Zero gradients
+            self.optimizer.zero_grad()
 
-            # Take step on Rx side
-            if self.learn_rx:
-                loss_chunk = self._optimize_gaussian_rl_rx(symbols_tensor[chunk*n_syms_pr_chunk:(chunk*n_syms_pr_chunk + n_syms_pr_chunk)])
+            # Sample new Tx filter from proposal (normal distribution)
+            with torch.no_grad():
+                self.pulse_shaper = self.proposal_mu + torch.randn_like(self.pulse_shaper) * self.proposal_sigma
+
+            # Slice out batch and create tensors
+            target = symbols_tensor[batch * self.batch_size:(batch * self.batch_size + self.batch_size)]
+
+            # Run upsampled symbols through system forward model - return symbols at Rx
+            with torch.no_grad():
+                tx = self.forward_tx(target)
+            ychan = self.forward_channel(tx)
+            rx_out = self.forward_rx(ychan)
+
+            # Calculate loss
+            loss = self.calculate_loss(target, rx_out)
+
+            # Update Rx using backpropagation
+            loss.backward()
+            self.optimizer.step()
+
+            # Update proposal distribution for Tx
+            with torch.no_grad():
+                reward_bias = 0.0  # TODO: Do we need this?
+                reward = -torch.mean(torch.square(target-rx_out))
+                eligibility_mu = ((self.pulse_shaper-self.proposal_mu) / self.proposal_sigma**2)  # FIXME: Add a clipping
+                eligibility_sigma = (-1/self.proposal_sigma + (self.pulse_shaper-self.proposal_mu)**2/self.proposal_sigma**3)
+
+                self.proposal_mu += self.tx_learning_rate * (reward - reward_bias) * eligibility_mu
+                self.proposal_sigma += self.tx_learning_rate * (reward - reward_bias) * eligibility_sigma
 
             # Update stepsizes according to schedule
             if self.lr_schedule and self.learn_rx:
@@ -654,88 +677,15 @@ class LearnableTransmissionSystem(object):
             # Print the status of the optimization (loss and lrs)
             this_rx_lr = self.optimizer.param_groups[-1]['lr'] if self.lr_schedule and self.learn_rx else np.nan
             this_tx_lr = self.tx_optimizer.param_groups[-1]['lr']
-            print_strs = [f"Chunk {chunk} (# symbols {chunk * n_syms_pr_chunk:.2e})"]
+            
+            if (batch % self.batch_print_interval) == 0:
+                print_strs = [f"Batch {batch} (# symbols {batch * self.batch_size:.2e})"]
 
-            print_strs.append(f"Symbol loss: {loss_chunk[-1]:.3f} (Rx LR: {this_rx_lr:.2e}, Tx LR {this_tx_lr:.2e})")
-            print(" - ".join(print_strs))
-            symbol_losses.append(loss_chunk)
+                print_strs.append(f"Symbol loss: {loss.item()[-1]:.3f} (Rx LR: {this_rx_lr:.2e}, Tx LR {this_tx_lr:.2e})")
+                print(" - ".join(print_strs))
+            symbol_losses[batch] = loss.item()
 
-        return np.concatenate(symbol_losses)
-    
-    def _optimize_gaussian_rl_tx(self, symbols: torch.TensorType) -> npt.ArrayLike:
-        loss_per_batch = np.empty((len(symbols) // self.batch_size, ), dtype=np.float64)
-        symbols_up = torch.zeros(self.sps * len(symbols), dtype=symbols.dtype)
-        symbols_up[0::self.sps] = symbols
-
-        for b in range(len(symbols) // self.batch_size):
-            # Slice out batch
-            target = symbols[b * self.batch_size:(b * self.batch_size + self.batch_size)]
-
-            # Run symbols through system forward model - return symbols at Rx
-            tx = self.forward_tx(target, *self.get_tx_parameters_as_list())
-
-            # Apply policy - random Gaussian noise (proposed in Aoudia and Hoydis, 2019)
-            txp = torch.sqrt(1 - self.policy_noise_std**2) * tx +   self.policy_noise_std * torch.randn_like(tx)
-
-            with torch.no_grad():
-                ychan = self.forward_channel(txp)
-                rx_out = self.forward_rx(ychan)
-
-            # Calculate loss per symbol
-            loss_avg = torch.mean(torch.square(rx_out - target))  # mean squared symbol error
-            loss_per_batch[b] = loss_avg.item()
-
-            # Calcuate the approximate gradient (cf. Aoudia and Hoydis, 2019 (eq 8))
-            ps_jac = torch.autograd.functional.jacobian(self.forward_tx, (target, *self.get_tx_parameters_as_list()))[1]
-            policy_jac = 2 * np.sqrt(1 - self.policy_noise_std**2) / self.policy_noise_std ** 2 * (txp - np.sqrt(1 - self.policy_noise_std**2) * tx)
-            ps_gradient = loss_avg * torch.inner(ps_jac, policy_jac)
-
-            # TODO: Apply Adam step
-
-            # Hmmm.... rethink the structure... again...
-            # Do I need another abstract class -> all the ones that use the same Tx structure?
-
-            # Apply gradient
-            self.pulse_shaper -= self.tx_learning_rate * ps_gradient
-
-            if torch.isnan(loss_per_batch[b]):
-                print("Detected loss to be nan. Terminate training...")
-                break
-
-        return loss_per_batch
-
-    def _optimize_gaussian_rl_rx(self, symbols: torch.TensorType) -> npt.ArrayLike:
-        loss_per_batch = np.empty((len(symbols) // self.batch_size, ), dtype=np.float64)
-
-        for b in range(len(symbols) // self.batch_size):
-            # Zero gradients
-            self.optimizer.zero_grad()
-
-            # Slice out batch
-            target = symbols[b * self.batch_size:(b * self.batch_size + self.batch_size)]
-
-            # Run upsampled symbols through system forward model - return symbols at Rx
-            with torch.no_grad():
-                tx = self.forward_tx(target, *self.get_tx_parameters_as_list())
-                ychan = self.forward_channel(tx)
-
-            rx_out = self.forward_rx(ychan)
-
-            # Calculate loss
-            loss = self.calculate_loss(target, rx_out)
-
-            # Update model using backpropagation
-            loss.backward()
-
-            # Take gradient step and log loss
-            self.optimizer.step()
-            loss_per_batch[b] = loss.item()
-
-            if torch.isnan(loss):
-                print("Detected loss to be nan. Terminate training...")
-                break
-
-        return loss_per_batch
+        return symbol_losses
 
 
     def evaluate(self, symbols: npt.ArrayLike, **eval_config):
@@ -814,9 +764,6 @@ class BasicAWGN(LearnableTransmissionSystem):
 
     def get_tx_parameters(self):
         return [{"params": self.pulse_shaper.parameters()}]
-    
-    def get_tx_parameters_as_list(self):
-        return [self.pulse_shaper]
 
     def forward_tx(self, x_syms: torch.TensorType, *tx_params):
         # Unpack parameters
@@ -1053,9 +1000,6 @@ class BasicAWGNwithBWL(LearnableTransmissionSystem):
 
     def get_tx_parameters(self):
         return [{"params": self.pulse_shaper}]
-    
-    def get_tx_parameters_as_list(self):
-        return [self.pulse_shaper]
 
     def forward_tx(self, x_syms: torch.TensorType, *tx_params) -> torch.TensorType:
         # Unpack parameters
