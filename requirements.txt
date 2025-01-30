@@ -8,4 +8,5 @@ matplotlib
 pyqt5
 seaborn
 eyediagram @ git+https://github.com/sfvnielsen/eyediagram@master
+torchcubicspline @ git+https://github.com/patrick-kidger/torchcubicspline.git@master
 pytest

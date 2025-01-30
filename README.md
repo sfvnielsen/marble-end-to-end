@@ -5,23 +5,18 @@ Currently, the repo uses automatic differentiation via. `pytorch` for ease of ex
 
 If you find the repository useful and you use it for academic purposes, please consider throwing a reference to our paper:
 
-Nielsen, S. F., Da Ros, F., Schmidt, M. N., & Zibar, D. (2024). *End-to-End Learning of Transmitter and Receiver Filters in Bandwidth Limited Fiber Optic Communication Systems*. arXiv preprint arXiv:2409.11980. Under review.
+S. F. Nielsen, F. Da Ros, M. N. Schmidt, and D. Zibar, “*End-to-End Learning of Transmitter and Receiver Filters in Bandwidth Limited Fiber Optic Communication Systems*,” Journal of Lightwave Technology, pp. 1–12, 2025, doi: 10.1109/JLT.2025.3528542.
 
 ## Getting started
-The list of required packages is collected in the `requirements.txt` file. The Python version used to create the environment is 3.10.12.
+First, install `torch` and `torchaudio` to fit your system specifications (CPU, GPU, Cuda version).
+Please refer to the [pytorch](https://pytorch.org/get-started/locally/) installation page for details on this.
+
+The list of additional required packages is collected in the `requirements.txt` file.
 Given that a Python virtual environment has been created (or an equivalent conda environment) the environment can be installed by the following command
 
 ```
 pip install -r requirements.txt
 ```
-
-Afterwards, install `torch` and `torchaudio` to fit your system specifications (CPU, GPU, Cuda version).
-Please refer to the [pytorch](https://pytorch.org/get-started/locally/) installation page for details on this.
-
-Finally, to get cubic spline support in torch, we use [Patrick Kidgers implementation](https://github.com/patrick-kidger/torchcubicspline), which can be installed as follows
-``
-pip install git+https://github.com/patrick-kidger/torchcubicspline.git@master
-``
 
 Once installed you should be able to run the main optimization script
 
@@ -29,12 +24,7 @@ Once installed you should be able to run the main optimization script
 python main_e2e.py
 ```
 
-### Standalone example
-
-A self-contained script that optimizes the Tx filter in an AWGN channel (*without* bandwidth limitation) has been implemented in `main_standalone_awgn.py`.
-This is to showcase how the optimization loop is implemented in an end-to-end system. 
-The equivalent system, implemented with a class-based structure can be seen in `lib/systems.py:BasicAWGN`.
-
+# Systems
 
 ## Additive white gaussian noise channel with bandwidth limitation
 
@@ -60,9 +50,24 @@ Please refer to the script `main_e2e_nonlin.py` for an example of how the system
 
 ## Intensity modulation/direct detection channel
 Inspired from [3], we implement an IM/DD system with an electro absorption modulator and a single mode fiber channel model.
-The system is implemented in `PulseShapingIM` (where the Rx filter is fixed), `RxFilteringIM` (where the Tx filter is fixed) and `JointTxRxIM` (where Rx and Tx filter are jointly optimized).
+The system is implemented in `PulseShapingIM` (where the Rx filter is fixed), `RxFilteringIM` (where the Tx filter is fixed) and `JointTxRxIM` (where Rx and Tx filter are jointly optimized). The block diagram for the IM/DD system can be seen below
+
+
+![Blockdiagram of the intensity modulated direct detection (IM/DD) system](imgs/end-to-end-imdd.png)
 
 Please refer to the script `main_e2e_imdd.py` for an example of how the system is optimized.
+
+## Wavelength division multiplexing
+To constrain the bandwidth of the learned filters, we additionally wrapped the AWGN system with bandwidth limitation and the IM/DD system in a wavelength division multiplexing scheme (WDM). This means that additional parallel symbol sequences are generated at the transmitter, mapped through the Tx processing and then added together in the complex domain (frequency shifted appropriately). This is done to model interference between information channels. At the receiver a single information channel is decoded and processed by the Rx.
+
+For both AWGN and IMDD the classes are named with a suffix ``*withWDM``. For an example cf. the script ``main_e2e_imdd_with_wdm.py``. 
+
+## Standalone example
+
+A self-contained script that optimizes the Tx filter in an AWGN channel (*without* bandwidth limitation) has been implemented in `main_standalone_awgn.py`.
+This is to showcase how the optimization loop is implemented in an end-to-end system. 
+The equivalent system, implemented with a class-based structure can be seen in `lib/systems.py:BasicAWGN`.
+
 
 ## Acknowledgements
 The work carried out in this repository is part of a research project [MAchine leaRning enaBLEd fiber optic communication](https://veluxfoundations.dk/en/villum-synergy-2021) (MARBLE) funded by the Villum foundation.
