@@ -74,7 +74,7 @@ if __name__ == "__main__":
                                          sps=samples_per_symbol, esn0_db=train_snr_db, baud_rate=baud_rate,
                                          learning_rate=learning_rate, batch_size=batch_size, constellation=modulation_scheme.constellation,
                                          learn_tx=learn_tx, learn_rx=learn_rx, rrc_rolloff=rrc_rolloff,
-                                         tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length, use_1clr=use_1clr, use_brickwall=use_brickwall,
+                                         tx_filter_length=tx_filter_length, rx_filter_length=rx_filter_length,
                                          adc_bwl_relative_cutoff=adc_bwl_relative_cutoff, dac_bwl_relative_cutoff=dac_bwl_relative_cutoff,
                                          tx_filter_init_type='rrc', rx_filter_init_type='rrc')
 
@@ -84,9 +84,9 @@ if __name__ == "__main__":
     adc_filter_b, adc_filter_a = None, None
     dac_filter_b, dac_filter_a = None, None
     if adc_bwl_relative_cutoff:
-        adc_filter_b, adc_filter_a = non_lin_system.adc.get_lpf_filter()
+        adc_filter_b, adc_filter_a = non_lin_system.adc.get_filters()
     if dac_bwl_relative_cutoff:
-        dac_filter_b, dac_filter_a = non_lin_system.dac.get_lpf_filter()
+        dac_filter_b, dac_filter_a = non_lin_system.dac.get_filters()
 
     # Generate training data
     n_bits = int(np.log2(len(modulation_scheme.constellation)) * n_symbols_train)
@@ -168,16 +168,9 @@ if __name__ == "__main__":
         fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_symbol_dist.eps"), format='eps')
         fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_symbol_dist.png"), dpi=DPI)
 
-    # Calc theory SER
-    esn0_db = non_lin_system.get_esn0_db()
-    ser_theory = calc_theory_ser_pam(mod_order, esn0_db)
-    ser_mf_conf = 1.96 * np.sqrt((ser * (1 - ser) / (n_symbols_val)))
-    print(f"Theoretical SER: {ser_theory} (EsN0: {esn0_db:.3f} [dB])")
-    print(f"95pct confidence (+-) {ser_mf_conf}")
-
     fig, ax = plt.subplots(figsize=FIGSIZE)
-    plot_bar(['E2E', 'Theory'],
-             [np.log10(x) for x in [ser, ser_theory]],
+    plot_bar(['E2E'],
+             [np.log10(x) for x in [ser]],
              ax)
     
     fig, ax = plt.subplots(figsize=FIGSIZE)

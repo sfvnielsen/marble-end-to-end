@@ -1537,7 +1537,7 @@ class NonLinearISIChannel(LearnableTransmissionSystem):
         # Apply rx filter
         if not decimate:
             self.rx_filter.set_stride(1)  # output all samples from rx_filter
-        rx_filter_out = self.rx_filter.forward_numpy(y_lp, batch_size)
+        rx_filter_out = self.rx_filter.forward_numpy(y_lp)
 
         # Power normalize and rescale to constellation
         rx_filter_out = rx_filter_out / torch.sqrt(torch.mean(torch.square(rx_filter_out))) * self.constellation_scale

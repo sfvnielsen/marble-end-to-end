@@ -225,16 +225,9 @@ if __name__ == "__main__":
         fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_symbol_dist.eps"), format='eps')
         fig.savefig(os.path.join(FIGURE_DIR, f"{figprefix}_symbol_dist.png"), dpi=DPI)
 
-    # Calc theory SER
-    esn0_db = imdd_system.get_esn0_db()
-    ser_theory = calc_theory_ser_pam(mod_order, esn0_db)
-    ser_mf_conf = 1.96 * np.sqrt((ser * (1 - ser) / (n_symbols_val)))
-    print(f"Theoretical SER: {ser_theory} (EsN0: {esn0_db:.3f} [dB])")
-    print(f"95pct confidence (+-) {ser_mf_conf}")
-
     fig, ax = plt.subplots(figsize=FIGSIZE)
-    plot_bar(['E2E', 'RRC+FFE', 'Theory'],
-             [np.log10(x) for x in [ser, ser_ffe, ser_theory]],
+    plot_bar(['E2E', 'RRC+FFE'],
+             [np.log10(x) for x in [ser, ser_ffe]],
              ax)
 
     # Plot voltage-to-absorption function - compare with (Liang and Kahn)
