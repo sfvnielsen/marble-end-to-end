@@ -5,7 +5,7 @@ Currently, the repo uses automatic differentiation via. `pytorch` for ease of ex
 
 If you find the repository useful and you use it for academic purposes, please consider throwing a reference to our paper:
 
-S. F. Nielsen, F. Da Ros, M. N. Schmidt, and D. Zibar, “*End-to-End Learning of Transmitter and Receiver Filters in Bandwidth Limited Fiber Optic Communication Systems*,” Journal of Lightwave Technology, pp. 1–12, 2025, doi: 10.1109/JLT.2025.3528542.
+S. F. Nielsen, F. Da Ros, M. N. Schmidt and D. Zibar, "*End-to-End Learning of Transmitter and Receiver Filters in Bandwidth Limited Fiber Optic Communication Systems*," in Journal of Lightwave Technology, vol. 43, no. 8, pp. 3749-3760, 15 April, 2025, doi: 10.1109/JLT.2025.3528542
 
 ## Getting started
 First, install `torch` and `torchaudio` to fit your system specifications (CPU, GPU, Cuda version).
